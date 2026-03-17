@@ -56,6 +56,7 @@ archives:
     files:
       - LICENSE
       - CHANGELOG.md
+      - config.example.yml
       - src: deploy/install.sh
         dst: install.sh
       - src: deploy/start.sh
@@ -75,15 +76,51 @@ archives:
       - src: deploy/stop.bat
         dst: stop.bat
 
+brews:
+  - name: axonhub
+    ids: [archive]
+    repository:
+      owner: cikichen
+      name: homebrew-axonhub
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/cikichen/axonhub"
+    description: "All-in-one AI development platform. Use any SDK, access any model."
+    license: "Apache-2.0"
+    url_template: "https://github.com/cikichen/axonhub/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    commit_author:
+      name: "github-actions[bot]"
+      email: "github-actions[bot]@users.noreply.github.com"
+    install: |
+      libexec.install "axonhub"
+      (etc/"axonhub").mkpath
+      target = etc/"axonhub/config.yml"
+      source = buildpath/"config.example.yml"
+      target.write source.read unless target.exist?
+      (bin/"axonhub").write <<~SH
+        #!/bin/sh
+        cd "#{etc}/axonhub" || exit 1
+        exec "#{libexec}/axonhub" "$@"
+      SH
+    service: |
+      run [opt_bin/"axonhub"]
+      keep_alive true
+    test: |
+      system "#{bin}/axonhub", "version"
+    caveats: |
+      Config file: #{etc}/axonhub/config.yml
+      The Homebrew wrapper starts AxonHub from #{etc}/axonhub so the default config is discovered automatically.
+      Release archives also include config.example.yml for manual installs.
+
 checksum:
-  name_template: 'checksums.txt'
+  name_template: "checksums.txt"
 
 snapshot:
-  version_template: '{{ incpatch .Version }}-snapshot'
+  version_template: "{{ incpatch .Version }}-snapshot"
 
 changelog:
   sort: asc
   filters:
     exclude:
-      - '^examples:'
-      - '^ui:'
+      - "^examples:"
+      - "^ui:"
