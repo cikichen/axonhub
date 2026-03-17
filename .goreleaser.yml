@@ -7,7 +7,7 @@ dist: .builds
 before:
   hooks:
     - /bin/sh -c 'cd deploy && chmod +x *.sh'
-    - make build-frontend
+    # - make build-frontend  # Skipped for homebrew testing
     - go mod tidy
 
 builds:
