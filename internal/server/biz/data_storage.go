@@ -34,6 +34,7 @@ import (
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/pkg/xcache"
+	"github.com/looplj/axonhub/internal/pkg/xerrors"
 )
 
 // DataStorageService handles data storage operations.
@@ -190,6 +191,18 @@ func (s *DataStorageService) buildFileSystem(ctx context.Context, ds *ent.DataSt
 
 // CreateDataStorage creates a new data storage record and refreshes relevant caches.
 func (s *DataStorageService) CreateDataStorage(ctx context.Context, input *ent.CreateDataStorageInput) (*ent.DataStorage, error) {
+	// Check for duplicate data storage name
+	exists, err := ent.FromContext(ctx).DataStorage.Query().
+		Where(datastorage.Name(input.Name)).
+		Exist(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check data storage name uniqueness: %w", err)
+	}
+
+	if exists {
+		return nil, xerrors.DuplicateNameError("data storage", input.Name)
+	}
+
 	dataStorage, err := ent.FromContext(ctx).DataStorage.Create().
 		SetName(input.Name).
 		SetSettings(input.Settings).
@@ -214,6 +227,23 @@ func (s *DataStorageService) UpdateDataStorage(ctx context.Context, id int, inpu
 	existing, err := ent.FromContext(ctx).DataStorage.Get(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get data storage: %w", err)
+	}
+
+	// Check for duplicate name if being updated
+	if input.Name != nil && *input.Name != existing.Name {
+		exists, err := ent.FromContext(ctx).DataStorage.Query().
+			Where(
+				datastorage.Name(*input.Name),
+				datastorage.IDNEQ(id),
+			).
+			Exist(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check data storage name uniqueness: %w", err)
+		}
+
+		if exists {
+			return nil, xerrors.DuplicateNameError("data storage", *input.Name)
+		}
 	}
 
 	// Build updated settings by merging with existing settings
@@ -474,25 +504,22 @@ func (s *DataStorageService) GetFileSystem(ctx context.Context, ds *ent.DataStor
 }
 
 // SaveData saves data to the specified data storage.
-// For file system storage, it writes the data to a file and returns the file path.
-func (s *DataStorageService) SaveData(ctx context.Context, ds *ent.DataStorage, key string, data []byte) (string, error) {
+func (s *DataStorageService) SaveData(ctx context.Context, ds *ent.DataStorage, key string, data []byte) error {
 	switch ds.Type {
 	case datastorage.TypeDatabase:
-		// For database storage, we just return the data as a string
-		// The caller will store it in the database
-		return string(data), nil
+		return nil
 	case datastorage.TypeFs, datastorage.TypeS3, datastorage.TypeGcs, datastorage.TypeWebdav:
 		// For file-based storage, write to file system
 		fs, err := s.GetFileSystem(ctx, ds)
 		if err != nil {
-			return "", fmt.Errorf("failed to get file system: %w", err)
+			return fmt.Errorf("failed to get file system: %w", err)
 		}
 
 		if ds.Type == datastorage.TypeFs {
 			key = filepath.FromSlash(key)
 			err = fs.MkdirAll(filepath.Dir(key), 0o777)
 			if err != nil {
-				return "", fmt.Errorf("failed to create directory: %w, key: %s", err, key)
+				return fmt.Errorf("failed to create directory: %w, key: %s", err, key)
 			}
 		} else if ds.Type == datastorage.TypeWebdav {
 			// For WebDAV, remove leading slash to avoid 405 error on some servers (e.g., Synology)
@@ -500,7 +527,7 @@ func (s *DataStorageService) SaveData(ctx context.Context, ds *ent.DataStorage, 
 
 			err = s.mkdirAll(fs, filepath.Dir(key))
 			if err != nil {
-				return "", fmt.Errorf("failed to create directory: %w, key: %s", err, key)
+				return fmt.Errorf("failed to create directory: %w, key: %s", err, key)
 			}
 		}
 
@@ -513,7 +540,7 @@ func (s *DataStorageService) SaveData(ctx context.Context, ds *ent.DataStorage, 
 
 			f, err := fs.Create(key)
 			if err != nil {
-				return "", fmt.Errorf("failed to create file: %w, key: %s", err, key)
+				return fmt.Errorf("failed to create file: %w, key: %s", err, key)
 			}
 
 			_ = f.Close()
@@ -521,12 +548,12 @@ func (s *DataStorageService) SaveData(ctx context.Context, ds *ent.DataStorage, 
 
 		// Write data to file
 		if err := afero.WriteFile(fs, key, data, 0o777); err != nil {
-			return "", fmt.Errorf("failed to write file: %w, key: %s", err, key)
+			return fmt.Errorf("failed to write file: %w, key: %s", err, key)
 		}
 
-		return key, nil
+		return nil
 	default:
-		return "", fmt.Errorf("unsupported storage type: %s", ds.Type)
+		return fmt.Errorf("unsupported storage type: %s", ds.Type)
 	}
 }
 

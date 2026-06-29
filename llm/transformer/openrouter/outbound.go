@@ -88,6 +88,8 @@ func (t *OutboundTransformer) TransformRequest(
 		// continue
 	case llm.RequestTypeImage:
 		return t.buildImageGenerationRequest(llmReq)
+	case llm.RequestTypeEmbedding:
+		return t.Outbound.TransformRequest(ctx, llmReq)
 	case llm.RequestTypeCompact:
 		return nil, fmt.Errorf("%w: compact is only supported by OpenAI Responses API", transformer.ErrInvalidRequest)
 	default:
@@ -125,6 +127,7 @@ func (t *OutboundTransformer) TransformRequest(
 		Body:        body,
 		Auth:        auth,
 		ContentType: "application/json",
+		APIFormat:   string(llm.APIFormatOpenAIChatCompletion),
 	}, nil
 }
 

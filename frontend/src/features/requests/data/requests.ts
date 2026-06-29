@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { graphqlRequest } from '@/gql/graphql';
 import { useTranslation } from 'react-i18next';
 import { useSelectedProjectId } from '@/stores/projectStore';
@@ -53,6 +53,7 @@ function buildRequestsQuery(permissions: { canViewApiKeys: boolean; canViewChann
             clientIP
             metricsLatencyMs
             metricsFirstTokenLatencyMs
+            metricsReasoningDurationMs
             executions(first: 10, orderBy: { field: CREATED_AT, direction: DESC }) {
               edges {
                 node {
@@ -139,6 +140,7 @@ function buildRequestDetailQuery(permissions: { canViewApiKeys: boolean; canView
           responseChunks
           status
           format
+          metricsReasoningDurationMs
           usageLogs(first: 1) {
             edges {
               node {
@@ -152,6 +154,47 @@ function buildRequestDetailQuery(permissions: { canViewApiKeys: boolean; canView
                 }
             }
           }
+        }
+      }
+    }
+  `;
+}
+
+function buildRequestDetailPollingQuery(permissions: { canViewApiKeys: boolean; canViewChannels: boolean }) {
+  const apiKeyFields = permissions.canViewApiKeys
+    ? `
+          apiKey {
+            id
+            name
+        }`
+    : '';
+
+  const requestChannelFields = permissions.canViewChannels
+    ? `
+          channel {
+            id
+            name
+          }`
+    : '';
+
+  return `
+    query GetRequestDetailPolling($id: ID!) {
+      node(id: $id) {
+        ... on Request {
+          id
+          createdAt
+          updatedAt${apiKeyFields}${requestChannelFields}
+          source
+          modelID
+          stream
+          clientIP
+          projectID
+          dataStorageID
+          contentSaved
+          contentStorageKey
+          status
+          format
+          metricsReasoningDurationMs
         }
       }
     }
@@ -199,6 +242,7 @@ function buildRequestExecutionsQuery(permissions: { canViewChannels: boolean }) 
                 format
                 stream
                 metricsFirstTokenLatencyMs
+                metricsReasoningDurationMs
               }
               cursor
             }
@@ -233,62 +277,114 @@ export function useRequests(variables?: {
     projectID?: string;
     [key: string]: any;
   };
-}) {
+}, options?: { projectId?: string | null; scopeToSelectedProject?: boolean; enabled?: boolean }) {
   const { handleError } = useErrorHandler();
   const { t } = useTranslation();
   const permissions = useRequestPermissions();
   const selectedProjectId = useSelectedProjectId();
+  const scopeToSelectedProject = options?.scopeToSelectedProject ?? true;
+  const projectId = options?.projectId !== undefined ? options.projectId : selectedProjectId;
+  const enabled = options?.enabled ?? true;
 
   return useQuery({
-    queryKey: ['requests', variables, permissions, selectedProjectId],
+    queryKey: ['requests', variables, permissions, projectId, scopeToSelectedProject],
     queryFn: async () => {
       try {
         const query = buildRequestsQuery(permissions);
-        const headers = selectedProjectId ? { 'X-Project-ID': selectedProjectId } : undefined;
+        const headers = projectId ? { 'X-Project-ID': projectId } : undefined;
 
-        // Add project filter if project is selected
+        // Add project filter if project scoping is enabled
         const finalVariables = {
           ...variables,
           where: {
             ...variables?.where,
-            ...(selectedProjectId && { projectID: selectedProjectId }),
+            ...(scopeToSelectedProject && projectId && { projectID: projectId }),
           },
         };
 
         const data = await graphqlRequest<{ requests: RequestConnection }>(query, finalVariables, headers);
         return requestConnectionSchema.parse(data?.requests);
       } catch (error) {
-        handleError(error, t('requests.errors.loadRequestsFailed'));
+        handleError(error, t('common.errors.internalServerError'));
         throw error;
       }
     },
-    enabled: true, // Requests can be queried without project selection for admin users
+    enabled,
+    refetchOnWindowFocus: false,
   });
 }
 
-export function useRequest(id: string) {
+export function useRequest(
+  id: string,
+  options?: {
+    projectId?: string | null;
+    enabled?: boolean;
+    disableAutoRefresh?: boolean;
+  }
+) {
   const { handleError } = useErrorHandler();
   const { t } = useTranslation();
   const permissions = useRequestPermissions();
   const selectedProjectId = useSelectedProjectId();
+  const queryClient = useQueryClient();
+  const projectId = options?.projectId !== undefined ? options.projectId : selectedProjectId;
+  const enabled = options?.enabled ?? true;
+
+  const queryKey = ['request', id, permissions, projectId] as const;
 
   return useQuery({
-    queryKey: ['request', id, permissions, selectedProjectId],
+    queryKey,
     queryFn: async () => {
       try {
-        const query = buildRequestDetailQuery(permissions);
-        const headers = selectedProjectId ? { 'X-Project-ID': selectedProjectId } : undefined;
+        const headers = projectId ? { 'X-Project-ID': projectId } : undefined;
+        const previousRequest = queryClient.getQueryData<Request>(queryKey);
+        const shouldUseLightweightPolling = previousRequest?.status === 'processing';
+
+        const query = shouldUseLightweightPolling
+          ? buildRequestDetailPollingQuery(permissions)
+          : buildRequestDetailQuery(permissions);
+
         const data = await graphqlRequest<{ node: Request }>(query, { id }, headers);
         if (!data.node) {
           throw new Error('Request not found');
         }
-        return requestSchema.parse(data.node);
+
+        const parsedRequest = requestSchema.parse(data.node);
+
+        if (!shouldUseLightweightPolling) {
+          return parsedRequest;
+        }
+
+        if (parsedRequest.status !== 'processing') {
+          const fullData = await graphqlRequest<{ node: Request }>(buildRequestDetailQuery(permissions), { id }, headers);
+          if (!fullData.node) {
+            throw new Error('Request not found');
+          }
+          return requestSchema.parse(fullData.node);
+        }
+
+        return requestSchema.parse({
+          ...previousRequest,
+          ...parsedRequest,
+          requestHeaders: previousRequest?.requestHeaders,
+          requestBody: previousRequest?.requestBody,
+          responseBody: previousRequest?.responseBody,
+          responseChunks: previousRequest?.responseChunks,
+          usageLogs: previousRequest?.usageLogs,
+        });
       } catch (error) {
-        handleError(error, t('requests.errors.loadRequestDetailFailed'));
+        handleError(error, t('common.errors.internalServerError'));
         throw error;
       }
     },
-    enabled: !!id,
+    enabled: enabled && !!id,
+    refetchInterval: (query) => {
+      if (options?.disableAutoRefresh) {
+        return false;
+      }
+
+      return query.state.data?.status === 'processing' ? 2000 : false;
+    },
   });
 }
 
@@ -331,19 +427,21 @@ export function useRequestExecutions(
     after?: string;
     orderBy?: { field: 'CREATED_AT'; direction: 'ASC' | 'DESC' };
     where?: Record<string, any>;
-  }
+  },
+  options?: { projectId?: string | null }
 ) {
   const { handleError } = useErrorHandler();
   const { t } = useTranslation();
   const permissions = useRequestPermissions();
   const selectedProjectId = useSelectedProjectId();
+  const projectId = options?.projectId !== undefined ? options.projectId : selectedProjectId;
 
   return useQuery({
-    queryKey: ['request-executions', requestID, variables, permissions, selectedProjectId],
+    queryKey: ['request-executions', requestID, variables, permissions, projectId],
     queryFn: async () => {
       try {
         const query = buildRequestExecutionsQuery(permissions);
-        const headers = selectedProjectId ? { 'X-Project-ID': selectedProjectId } : undefined;
+        const headers = projectId ? { 'X-Project-ID': projectId } : undefined;
         const finalVariables = {
           requestID,
           ...variables,
@@ -351,7 +449,7 @@ export function useRequestExecutions(
         const data = await graphqlRequest<{ node: { executions: RequestExecutionConnection } }>(query, finalVariables, headers);
         return requestExecutionConnectionSchema.parse(data?.node?.executions);
       } catch (error) {
-        handleError(error, t('requests.errors.loadRequestDetailFailed'));
+        handleError(error, t('common.errors.internalServerError'));
         throw error;
       }
     },

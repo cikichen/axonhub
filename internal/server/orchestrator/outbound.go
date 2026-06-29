@@ -15,6 +15,7 @@ import (
 	"github.com/looplj/axonhub/llm/pipeline"
 	"github.com/looplj/axonhub/llm/streams"
 	"github.com/looplj/axonhub/llm/transformer"
+	"github.com/looplj/axonhub/llm/transformer/shared"
 )
 
 // OutboundPersistentStream wraps a stream and tracks all responses for final saving to database.
@@ -51,7 +52,7 @@ func NewOutboundPersistentStream(
 	perf *biz.PerformanceRecord,
 	state *PersistenceState,
 ) *OutboundPersistentStream {
-	return &OutboundPersistentStream{
+	s := &OutboundPersistentStream{
 		ctx:             ctx,
 		stream:          stream,
 		request:         request,
@@ -64,6 +65,8 @@ func NewOutboundPersistentStream(
 		closed:          false,
 		state:           state,
 	}
+
+	return s
 }
 
 func (ts *OutboundPersistentStream) Next() bool {
@@ -138,7 +141,7 @@ func (ts *OutboundPersistentStream) Close() error {
 
 	if len(ts.responseChunks) > 0 {
 		responseBody, meta, aggErr = ts.transformer.AggregateStreamChunks(context.WithoutCancel(ctx), ts.responseChunks)
-		aggregatedCompleted = aggErr == nil && isCompletedAggregatedOutboundResponse(meta)
+		aggregatedCompleted = aggErr == nil && isCompletedAggregated(meta)
 		ts.logFinalizationDecision(ctx, "aggregated_outbound_chunks", streamErr, ctxErr, aggregatedCompleted, aggErr)
 		if aggregatedCompleted {
 			log.Debug(ctx, "Stream has valid complete response without terminal event, treating as completed")
@@ -296,8 +299,8 @@ func (ts *OutboundPersistentStream) persistAggregatedResponse(ctx context.Contex
 	}
 }
 
-func isCompletedAggregatedOutboundResponse(meta llm.ResponseMeta) bool {
-	return meta.Usage != nil
+func isCompletedAggregated(meta llm.ResponseMeta) bool {
+	return meta.Usage != nil && meta.Usage.CompletionTokens > 0
 }
 
 var errSkipCandidateByCircuitBreaker = errors.New("skip candidate by circuit breaker")
@@ -344,8 +347,43 @@ func (p *PersistentOutboundTransformer) TransformRequest(ctx context.Context, ll
 
 	// Apply channel transform options to create a new request
 	llmRequest = applyTransformOptions(llmRequest, candidate.Channel.Settings)
+	llmRequest = filterResponseCustomToolMessagesForNonResponsesOutbound(llmRequest, p.wrapped.APIFormat())
 
 	return p.wrapped.TransformRequest(ctx, llmRequest)
+}
+
+func filterResponseCustomToolMessagesForNonResponsesOutbound(
+	llmRequest *llm.Request,
+	outboundFormat llm.APIFormat,
+) *llm.Request {
+	if llmRequest == nil {
+		return nil
+	}
+
+	if !isResponsesFormat(llmRequest.APIFormat) || isResponsesFormat(outboundFormat) || !containsResponseCustomToolMessages(llmRequest.Messages) {
+		return llmRequest
+	}
+
+	cloned := *llmRequest
+	cloned.Messages = shared.FilterOutResponseCustomToolMessages(llmRequest.Messages)
+
+	return &cloned
+}
+
+func isResponsesFormat(format llm.APIFormat) bool {
+	return format == llm.APIFormatOpenAIResponse || format == llm.APIFormatOpenAIResponseCompact
+}
+
+func containsResponseCustomToolMessages(messages []llm.Message) bool {
+	for _, msg := range messages {
+		for _, toolCall := range msg.ToolCalls {
+			if toolCall.Type == llm.ToolTypeResponsesCustomTool || toolCall.ResponseCustomToolCall != nil {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 func (p *PersistentOutboundTransformer) TransformResponse(ctx context.Context, response *httpclient.Response) (*llm.Response, error) {
@@ -387,7 +425,7 @@ func (p *PersistentOutboundTransformer) GetRequest() *ent.Request {
 
 // GetCurrentChannel returns the current channel.
 func (p *PersistentOutboundTransformer) GetCurrentChannel() *biz.Channel {
-	if p.state.CurrentCandidate == nil {
+	if p.state == nil || p.state.CurrentCandidate == nil {
 		return nil
 	}
 
@@ -414,9 +452,27 @@ func (p *PersistentOutboundTransformer) HasMoreChannels() bool {
 	return p.state.CurrentCandidateIndex+1 < len(p.state.ChannelModelsCandidates)
 }
 
+// resetPassThroughStreamState cancels the current attempt's fan-out goroutine (if any)
+// and clears pass-through stream state so the next attempt starts with a clean slate.
+// Must be called before every retry to prevent goroutine leaks and data races on
+// state.RawStreamErrRef.
+func (p *PersistentOutboundTransformer) resetPassThroughStreamState() {
+	if p.state.RawStreamCancel != nil {
+		p.state.RawStreamCancel()
+		p.state.RawStreamCancel = nil
+	}
+
+	p.state.RawStreamCh = nil
+	p.state.RawStreamErrRef = nil
+}
+
 // NextChannel moves to the next available candidate for retry.
 // It implements the pipeline.Retryable interface.
 func (p *PersistentOutboundTransformer) NextChannel(ctx context.Context) error {
+	// Cancel any in-flight pass-through stream goroutine from the previous attempt
+	// so it exits promptly and releases its upstream HTTP connection.
+	p.resetPassThroughStreamState()
+
 	p.state.CurrentCandidateIndex++
 
 	p.state.CurrentModelIndex = 0
@@ -455,6 +511,36 @@ func (p *PersistentOutboundTransformer) CanRetry(err error) bool {
 		return false
 	}
 
+	// Empty response detection: allow same-channel retry so the pipeline can
+	// re-execute the request against the same (or next model in the) channel.
+	if errors.Is(err, pipeline.ErrEmptyResponse) {
+		log.Debug(context.Background(), "empty response detected",
+			log.Int("channel_id", p.state.CurrentCandidate.Channel.ID),
+		)
+
+		return true
+	}
+
+	// 429 Too Many Requests: check if Retry-After header is present
+	if httpclient.HasRetryAfterHeader(err) {
+		// If Retry-After header is present, skip same-channel retry
+		// (the channel is explicitly rate-limited by upstream)
+		log.Debug(context.Background(), "429 with Retry-After, skipping same-channel retry",
+			log.Int("channel_id", p.state.CurrentCandidate.Channel.ID),
+		)
+
+		return false
+	}
+
+	// 429 without Retry-After header, allow same-channel retry (might be transient rate limit)
+	if httpclient.IsRateLimitErr(err) {
+		log.Debug(context.Background(), "429 without Retry-After, allowing same-channel retry",
+			log.Int("channel_id", p.state.CurrentCandidate.Channel.ID),
+		)
+
+		return true
+	}
+
 	// if there are more models available in the current candidate, try the next model.
 	if p.state.CurrentModelIndex+1 < len(p.state.CurrentCandidate.Models) {
 		return true
@@ -472,6 +558,10 @@ func (p *PersistentOutboundTransformer) PrepareForRetry(ctx context.Context) err
 
 	// Reset request execution for the same channel.
 	p.state.RequestExec = nil
+
+	// Cancel any in-flight pass-through stream goroutine from the previous attempt
+	// so it exits promptly and releases its upstream HTTP connection.
+	p.resetPassThroughStreamState()
 
 	// If there's another model in the list, advance to it.
 	if p.state.CurrentModelIndex+1 < len(candidate.Models) {

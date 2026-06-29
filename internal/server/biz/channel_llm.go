@@ -31,6 +31,7 @@ import (
 	"github.com/looplj/axonhub/llm/transformer/modelscope"
 	"github.com/looplj/axonhub/llm/transformer/moonshot"
 	"github.com/looplj/axonhub/llm/transformer/nanogpt"
+	"github.com/looplj/axonhub/llm/transformer/ollama"
 	"github.com/looplj/axonhub/llm/transformer/openai"
 	"github.com/looplj/axonhub/llm/transformer/openai/codex"
 	"github.com/looplj/axonhub/llm/transformer/openai/copilot"
@@ -235,6 +236,19 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel) (*Channel
 		transformer, err := nanogpt.NewOutboundTransformerWithConfig(&nanogpt.Config{
 			BaseURL:        c.BaseURL,
 			APIKeyProvider: getAPIKeyProvider(ch),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
+		}
+
+		ch.Outbound = transformer
+
+		return ch, nil
+	case channel.TypeNanogptResponses:
+		transformer, err := responses.NewOutboundTransformerWithConfig(&responses.Config{
+			BaseURL:         c.BaseURL,
+			APIKeyProvider:  getAPIKeyProvider(ch),
+			AccountIdentity: accountIdentity,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
@@ -541,6 +555,20 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel) (*Channel
 		ch.Outbound = transformer
 
 		return ch, nil
+	case channel.TypeBailianAnthropic, channel.TypeMoonshotCoding:
+		transformer, err := anthropic.NewOutboundTransformerWithConfig(&anthropic.Config{
+			Type:            anthropic.PlatformDirect,
+			BaseURL:         c.BaseURL,
+			AccountIdentity: accountIdentity,
+			APIKeyProvider:  getAPIKeyProvider(ch),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
+		}
+
+		ch.Outbound = transformer
+
+		return ch, nil
 	case channel.TypeCodex:
 		// Check if using OAuth credentials first
 		if c.Credentials.IsOAuth() {
@@ -747,6 +775,24 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel) (*Channel
 		if tokens != nil {
 			setupAutoRefresh(ch, tokens, oauth.AutoRefreshOptions{})
 		}
+
+		return ch, nil
+	case channel.TypeOllama:
+		// Ollama is often used locally without API key, but may also be configured with one
+		var apiKeyProvider auth.APIKeyProvider
+		if len(ch.cachedEnabledAPIKeys) > 0 {
+			apiKeyProvider = getAPIKeyProvider(ch)
+		}
+
+		transformer, err := ollama.NewOutboundTransformerWithConfig(&ollama.Config{
+			BaseURL:        c.BaseURL,
+			APIKeyProvider: apiKeyProvider,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ollama outbound transformer: %w", err)
+		}
+
+		ch.Outbound = transformer
 
 		return ch, nil
 	default:

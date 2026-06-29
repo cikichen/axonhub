@@ -185,8 +185,9 @@ func TestCodexOutbound_DoesNotInjectCLIInstructions(t *testing.T) {
 
 	body := decodeCodexRequestBody(t, hreq)
 
-	_, hasInstructions := body["instructions"]
-	assert.False(t, hasInstructions)
+	instructions, hasInstructions := body["instructions"]
+	assert.True(t, hasInstructions, "instructions field must always be present for Codex")
+	assert.Equal(t, "", instructions)
 	assert.NotContains(t, string(hreq.Body), "You are a coding agent running in the Codex CLI")
 	assert.NotContains(t, string(hreq.Body), "You are Codex")
 	assert.Equal(t, false, body["store"])
@@ -275,6 +276,38 @@ func TestCodexOutbound_AppliesReasoningDefaultsWhenMissing(t *testing.T) {
 	assert.Equal(t, []any{"reasoning.encrypted_content"}, body["include"])
 	assert.Equal(t, "auto", reasoning["summary"])
 	assert.NotContains(t, body, "metadata")
+}
+
+func TestCodexOutbound_ForcesArrayInputsForSingleMessage(t *testing.T) {
+	ctx := context.Background()
+	outbound := newTestCodexOutbound(t)
+
+	// A single simple user message — without ArrayInputs=true this would be
+	// serialized as a plain string "input". With the fix, it must be an array.
+	hreq, err := outbound.TransformRequest(ctx, &llm.Request{
+		Model: "gpt-5-codex",
+		Messages: []llm.Message{{
+			Role:    "user",
+			Content: llm.MessageContent{Content: lo.ToPtr("Hello")},
+		}},
+		Stream: lo.ToPtr(true),
+	})
+	require.NoError(t, err)
+
+	body := decodeCodexRequestBody(t, hreq)
+
+	// The "input" field must be an array of items, not a plain string.
+	inputRaw, ok := body["input"]
+	require.True(t, ok, "input field must be present")
+	inputSlice, ok := inputRaw.([]interface{})
+	require.True(t, ok, "input should be an array, got %T", inputRaw)
+	assert.NotEmpty(t, inputSlice)
+
+	// Verify the single item has the expected message structure.
+	first, ok := inputSlice[0].(map[string]interface{})
+	require.True(t, ok, "first input item should be a map, got %T", inputSlice[0])
+	assert.Equal(t, "message", first["type"])
+	assert.Equal(t, "user", first["role"])
 }
 
 func newTestCodexOutbound(t *testing.T) *OutboundTransformer {

@@ -130,7 +130,8 @@ dumps
 .gocache
 
 config.yml
-internal/server/static/dist
+internal/server/static/dist/*
+!internal/server/static/dist/.gitkeep
 *.b64
 coverage.out
 *.test
@@ -158,3 +159,5 @@ locales_backup
 config.schema.json
 *.db-shm
 *.db-wal
+*.agent/summary
+.factory

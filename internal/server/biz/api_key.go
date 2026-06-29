@@ -24,6 +24,7 @@ import (
 	"github.com/looplj/axonhub/internal/pkg/watcher"
 	"github.com/looplj/axonhub/internal/pkg/xcache"
 	"github.com/looplj/axonhub/internal/pkg/xcache/live"
+	"github.com/looplj/axonhub/internal/pkg/xerrors"
 	"github.com/looplj/axonhub/internal/scopes"
 )
 
@@ -41,6 +42,7 @@ type APIKeyServiceParams struct {
 	CacheConfig    xcache.Config
 	Ent            *ent.Client
 	ProjectService *ProjectService
+	KeyPrefix      string `name:"api_key_prefix"`
 }
 
 type APIKeyService struct {
@@ -49,6 +51,7 @@ type APIKeyService struct {
 	ProjectService *ProjectService
 	APIKeyCache    *live.IndexedCache[string, *ent.APIKey]
 	apiKeyNotifier watcher.Notifier[live.CacheEvent[string]]
+	keyPrefix      string
 }
 
 func NewAPIKeyService(params APIKeyServiceParams) *APIKeyService {
@@ -57,6 +60,7 @@ func NewAPIKeyService(params APIKeyServiceParams) *APIKeyService {
 			db: params.Ent,
 		},
 		ProjectService: params.ProjectService,
+		keyPrefix:      params.KeyPrefix,
 	}
 
 	cacheMode := params.CacheConfig.Mode
@@ -157,8 +161,8 @@ func (s *APIKeyService) loadAPIKeysSince(ctx context.Context, since time.Time) (
 	return items, maxUpdated, nil
 }
 
-// GenerateAPIKey generates a new API key with ah- prefix (similar to OpenAI format).
-func GenerateAPIKey() (string, error) {
+// GenerateAPIKey generates a new API key with the given prefix.
+func GenerateAPIKey(prefix string) (string, error) {
 	// Generate 32 bytes of random data
 	bytes := make([]byte, 32)
 
@@ -167,8 +171,8 @@ func GenerateAPIKey() (string, error) {
 		return "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
 
-	// Convert to hex and add ah- prefix
-	return "ah-" + hex.EncodeToString(bytes), nil
+	// Convert to hex and add prefix
+	return prefix + "-" + hex.EncodeToString(bytes), nil
 }
 
 // CreateLLMAPIKey creates a new API key for LLM calls using a service account API key.
@@ -180,7 +184,7 @@ func (s *APIKeyService) CreateLLMAPIKey(ctx context.Context, owner *ent.APIKey, 
 
 	client := s.entFromContext(ctx)
 
-	generatedKey, err := GenerateAPIKey()
+	generatedKey, err := GenerateAPIKey(s.keyPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate api key: %w", err)
 	}
@@ -213,8 +217,23 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, input ent.CreateAPIKey
 
 	client := s.entFromContext(ctx)
 
-	// Generate API key with ah- prefix (similar to OpenAI format)
-	generatedKey, err := GenerateAPIKey()
+	// Check for duplicate API key name in the same project
+	exists, err := client.APIKey.Query().
+		Where(
+			apikey.NameEQ(input.Name),
+			apikey.ProjectIDEQ(input.ProjectID),
+		).
+		Exist(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check API key name uniqueness: %w", err)
+	}
+
+	if exists {
+		return nil, xerrors.DuplicateNameError("API Key", input.Name)
+	}
+
+	// Generate API key with configured prefix
+	generatedKey, err := GenerateAPIKey(s.keyPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate API key: %w", err)
 	}
@@ -273,6 +292,24 @@ func (s *APIKeyService) UpdateAPIKey(ctx context.Context, id int, input ent.Upda
 
 	if apiKey.Type == apikey.TypeNoauth {
 		return nil, fmt.Errorf("noauth type API key cannot be updated")
+	}
+
+	// Check for duplicate name if name is being updated
+	if input.Name != nil && *input.Name != apiKey.Name {
+		exists, err := client.APIKey.Query().
+			Where(
+				apikey.NameEQ(*input.Name),
+				apikey.ProjectIDEQ(apiKey.ProjectID),
+				apikey.IDNEQ(id),
+			).
+			Exist(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check API key name uniqueness: %w", err)
+		}
+
+		if exists {
+			return nil, xerrors.DuplicateNameError("API Key", *input.Name)
+		}
 	}
 
 	update := client.APIKey.UpdateOneID(id).SetNillableName(input.Name)
@@ -495,7 +532,7 @@ func (s *APIKeyService) GetAPIKey(ctx context.Context, key string) (*ent.APIKey,
 
 	if err != nil {
 		if errors.Is(err, live.ErrKeyNotFound) {
-			return nil, fmt.Errorf("%w:failed to get api key: %w", ErrInvalidAPIKey, err)
+			return nil, fmt.Errorf("%w: failed to get api key: %w", ErrInvalidAPIKey, err)
 		}
 
 		return nil, fmt.Errorf("failed to get api key: %w", err)
@@ -506,6 +543,11 @@ func (s *APIKeyService) GetAPIKey(ctx context.Context, key string) (*ent.APIKey,
 	// DO NOT CACHE PROJECT
 	project, err := s.ProjectService.GetProjectByID(ctx, apiKey.ProjectID)
 	if err != nil {
+		// Check if it's a "not found" error
+		if errors.Is(err, ErrProjectNotFound) {
+			return nil, fmt.Errorf("%w: project not found", ErrInvalidAPIKey)
+		}
+		// Return original error for other cases (database errors, internal errors, etc.)
 		return nil, fmt.Errorf("failed to get api key project: %w", err)
 	}
 

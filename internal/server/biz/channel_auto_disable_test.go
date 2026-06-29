@@ -14,6 +14,8 @@ import (
 	"github.com/looplj/axonhub/internal/ent/enttest"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/pkg/xcache"
+	"github.com/looplj/axonhub/internal/pkg/xcache/live"
+	"github.com/looplj/axonhub/llm/httpclient"
 )
 
 func newTestChannelService(client *ent.Client) *ChannelService {
@@ -24,16 +26,27 @@ func newTestChannelService(client *ent.Client) *ChannelService {
 		Cache: xcache.NewFromConfig[ent.System](xcache.Config{Mode: xcache.ModeMemory}),
 	}
 
-	return &ChannelService{
+	svc := &ChannelService{
 		AbstractService: &AbstractService{
 			db: client,
 		},
 		SystemService:      mockSysSvc,
+		WebhookNotifier:    NewWebhookNotifier(mockSysSvc, httpclient.NewHttpClient()),
 		channelPerfMetrics: make(map[int]*channelMetrics),
 		channelErrorCounts: make(map[int]map[int]int),
 		apiKeyErrorCounts:  make(map[int]map[string]map[int]int),
 		perfWindowSeconds:  600,
 	}
+
+	svc.enabledChannelsCache = live.NewCache(live.Options[[]*Channel]{
+		Name:            "test_enabled_channels",
+		InitialValue:    []*Channel{},
+		RefreshInterval: time.Hour,
+		RefreshFunc:     svc.reloadEnabledChannels,
+		OnSwap:          svc.onEnabledChannelsSwap,
+	})
+
+	return svc
 }
 
 func createTestChannelWithAPIKeys(t *testing.T, client *ent.Client, ctx context.Context, name string, apiKeys []string) *ent.Channel {
@@ -88,10 +101,10 @@ func TestChannelService_checkAndHandleAPIKeyError(t *testing.T) {
 				},
 			},
 			perf: &PerformanceRecord{
-				ChannelID:       ch.ID,
-				APIKey:          "key1",
+				ChannelID:          ch.ID,
+				APIKey:             "key1",
 				ResponseStatusCode: 401,
-				Success:         false,
+				Success:            false,
 			},
 			expectedDisabled: false,
 			setupFunc: func() {
@@ -109,10 +122,10 @@ func TestChannelService_checkAndHandleAPIKeyError(t *testing.T) {
 				},
 			},
 			perf: &PerformanceRecord{
-				ChannelID:       ch.ID,
-				APIKey:          "key1",
+				ChannelID:          ch.ID,
+				APIKey:             "key1",
 				ResponseStatusCode: 401,
-				Success:         false,
+				Success:            false,
 			},
 			expectedDisabled: false,
 			setupFunc: func() {
@@ -132,10 +145,10 @@ func TestChannelService_checkAndHandleAPIKeyError(t *testing.T) {
 				},
 			},
 			perf: &PerformanceRecord{
-				ChannelID:       ch.ID,
-				APIKey:          "key1",
+				ChannelID:          ch.ID,
+				APIKey:             "key1",
 				ResponseStatusCode: 401,
-				Success:         false,
+				Success:            false,
 			},
 			expectedDisabled: true,
 			setupFunc: func() {
@@ -163,10 +176,10 @@ func TestChannelService_checkAndHandleAPIKeyError(t *testing.T) {
 				},
 			},
 			perf: &PerformanceRecord{
-				ChannelID:       ch.ID,
-				APIKey:          "key1",
+				ChannelID:          ch.ID,
+				APIKey:             "key1",
 				ResponseStatusCode: 500,
-				Success:         false,
+				Success:            false,
 			},
 			expectedDisabled: false,
 			setupFunc: func() {
@@ -186,10 +199,10 @@ func TestChannelService_checkAndHandleAPIKeyError(t *testing.T) {
 				},
 			},
 			perf: &PerformanceRecord{
-				ChannelID:       ch.ID,
-				APIKey:          "key2",
+				ChannelID:          ch.ID,
+				APIKey:             "key2",
 				ResponseStatusCode: 401,
-				Success:         false,
+				Success:            false,
 			},
 			expectedDisabled: false,
 			setupFunc: func() {
@@ -257,9 +270,9 @@ func TestChannelService_checkAndHandleChannelError(t *testing.T) {
 				},
 			},
 			perf: &PerformanceRecord{
-				ChannelID:       ch.ID,
+				ChannelID:          ch.ID,
 				ResponseStatusCode: 401,
-				Success:         false,
+				Success:            false,
 			},
 			expectedDisabled: false,
 			setupFunc: func() {
@@ -283,9 +296,9 @@ func TestChannelService_checkAndHandleChannelError(t *testing.T) {
 				},
 			},
 			perf: &PerformanceRecord{
-				ChannelID:       ch.ID,
+				ChannelID:          ch.ID,
 				ResponseStatusCode: 401,
-				Success:         false,
+				Success:            false,
 			},
 			expectedDisabled: true,
 			setupFunc: func() {
@@ -330,6 +343,33 @@ func TestChannelService_checkAndHandleChannelError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestChannelService_markChannelUnavailable_RefreshesStaleLocalCacheWhenAlreadyDisabled(t *testing.T) {
+	client := enttest.NewEntClient(t, "sqlite3", "file:ent?mode=memory&_fk=0")
+	defer client.Close()
+
+	ctx := context.Background()
+	ctx = ent.NewContext(ctx, client)
+	ctx = authz.WithTestBypass(ctx)
+
+	svc := newTestChannelService(client)
+	defer svc.enabledChannelsCache.Stop()
+
+	ch := createTestChannelWithAPIKeys(t, client, ctx, "stale-cache-channel", []string{"key1"})
+
+	require.NoError(t, svc.enabledChannelsCache.Load(ctx, true))
+	require.NotNil(t, svc.GetEnabledChannel(ch.ID), "precondition: local cache should contain enabled channel")
+
+	_, err := client.Channel.UpdateOneID(ch.ID).
+		SetStatus(channel.StatusDisabled).
+		SetErrorMessage("disabled elsewhere").
+		Save(ctx)
+	require.NoError(t, err)
+
+	svc.markChannelUnavailable(ctx, ch.ID, 401, 2, 2)
+
+	require.Nil(t, svc.GetEnabledChannel(ch.ID), "local cache should be refreshed even when DB row was already disabled")
 }
 
 func TestChannelService_DisableAllAPIKeysDisablesChannel(t *testing.T) {
@@ -440,10 +480,10 @@ func TestChannelService_MultipleStatusCodes(t *testing.T) {
 	}
 
 	perf401 := &PerformanceRecord{
-		ChannelID:       ch.ID,
-		APIKey:          "key1",
+		ChannelID:          ch.ID,
+		APIKey:             "key1",
 		ResponseStatusCode: 401,
-		Success:         false,
+		Success:            false,
 	}
 
 	result := svc.checkAndHandleAPIKeyError(ctx, perf401, policy)
@@ -459,10 +499,10 @@ func TestChannelService_MultipleStatusCodes(t *testing.T) {
 
 	// Test 403 - needs only 1 time
 	perf403 := &PerformanceRecord{
-		ChannelID:       ch.ID,
-		APIKey:          "key2",
+		ChannelID:          ch.ID,
+		APIKey:             "key2",
 		ResponseStatusCode: 403,
-		Success:         false,
+		Success:            false,
 	}
 
 	result = svc.checkAndHandleAPIKeyError(ctx, perf403, policy)
@@ -508,10 +548,10 @@ func TestChannelService_ConcurrentErrorTracking(t *testing.T) {
 			defer wg.Done()
 
 			perf := &PerformanceRecord{
-				ChannelID:       ch.ID,
-				APIKey:          "key1",
+				ChannelID:          ch.ID,
+				APIKey:             "key1",
 				ResponseStatusCode: 401,
-				Success:         false,
+				Success:            false,
 			}
 			svc.checkAndHandleAPIKeyError(ctx, perf, policy)
 		}(i)

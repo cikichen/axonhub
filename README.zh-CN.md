@@ -14,7 +14,7 @@
 [![Go 版本](https://img.shields.io/github/go-mod/go-version/looplj/axonhub?logo=go&logoColor=white)](https://golang.org/)
 [![Docker Ready](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](https://docker.com)
 
-[English](README.md) | [中文](README.zh-CN.md)
+[English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja-JP.md)
 
 </div>
 
@@ -58,6 +58,10 @@
 ---
 
 ## 📚 文档 | Documentation
+
+### 文档索引 | Documentation Index
+
+- 📑 **[完整文档索引](docs/zh/index.md)** - 所有文档导航和快速查找
 
 ### DeepWiki
 详细的技术文档、API 参考、架构设计等内容，可以访问 

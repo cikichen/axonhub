@@ -259,6 +259,12 @@ func (w *Worker) cleanupOldRequestExecutions(ctx context.Context, cutoffTime tim
 
 	for {
 		executions, err := w.Ent.RequestExecution.Query().
+			Select(
+				requestexecution.FieldID,
+				requestexecution.FieldProjectID,
+				requestexecution.FieldDataStorageID,
+				requestexecution.FieldRequestID,
+			).
 			Where(requestexecution.CreatedAtLT(cutoffTime)).
 			Order(ent.Asc(requestexecution.FieldID)).
 			Limit(batchSize).
@@ -302,6 +308,11 @@ func (w *Worker) cleanupOldRequestsRecords(ctx context.Context, cutoffTime time.
 
 	for {
 		reqs, err := w.Ent.Request.Query().
+			Select(
+				request.FieldID,
+				request.FieldProjectID,
+				request.FieldDataStorageID,
+			).
 			Where(request.CreatedAtLT(cutoffTime)).
 			Order(ent.Asc(request.FieldID)).
 			Limit(batchSize).
@@ -571,8 +582,7 @@ func (w *Worker) runVacuum(ctx context.Context) error {
 		vacuumSQL = "VACUUM"
 	}
 
-	_, err := sqlDriver.ExecContext(ctx, vacuumSQL, nil, nil)
-	if err != nil {
+	if _, err := sqlDriver.ExecContext(ctx, vacuumSQL); err != nil {
 		return fmt.Errorf("failed to execute %s: %w", vacuumSQL, err)
 	}
 

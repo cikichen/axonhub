@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"text/template"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/objects"
-	"github.com/looplj/axonhub/internal/server/biz"
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/pipeline"
@@ -171,6 +171,12 @@ func applyBodyOperation(
 		return applyBodyRename(body, op)
 	case objects.OverrideOpCopy:
 		return applyBodyCopy(body, op)
+	case objects.OverrideOpArrayAppend:
+		return applyBodyArrayInsert(ctx, body, op, renderCtx, arrayInsertAtEnd)
+	case objects.OverrideOpArrayPrepend:
+		return applyBodyArrayInsert(ctx, body, op, renderCtx, arrayInsertAtStart)
+	case objects.OverrideOpArrayInsert:
+		return applyBodyArrayInsert(ctx, body, op, renderCtx, arrayInsertAtIndex)
 	default:
 		log.Warn(ctx, "unknown override operation",
 			log.String("op", op.Op),
@@ -220,6 +226,98 @@ func applyBodyCopy(body []byte, op objects.OverrideOperation) ([]byte, error) {
 	}
 
 	return sjson.SetBytes(body, op.To, result.Value())
+}
+
+type arrayInsertMode int
+
+const (
+	arrayInsertAtStart arrayInsertMode = iota
+	arrayInsertAtEnd
+	arrayInsertAtIndex
+)
+
+// applyBodyArrayInsert inserts one or more values into an array at the requested position.
+// Behavior:
+//   - If the rendered value is a JSON array and op.Splat is nil or true, its elements are
+//     spread into the target array. Set Splat=false to insert the array as a single nested element.
+//   - When the target path does not exist, a new array is created with the value(s).
+//   - When the target path exists but is not an array, an error is returned.
+//   - For arrayInsertAtIndex, op.Index is required and may be negative (counted from the end).
+//     Out-of-range indexes are clamped to [0, len].
+func applyBodyArrayInsert(
+	ctx context.Context,
+	body []byte,
+	op objects.OverrideOperation,
+	renderCtx RenderContext,
+	mode arrayInsertMode,
+) ([]byte, error) {
+	if op.Path == "" {
+		return body, fmt.Errorf("array op requires a path")
+	}
+
+	rendered := renderOverrideValue(ctx, op.Value, renderCtx)
+
+	splat := true
+	if op.Splat != nil {
+		splat = *op.Splat
+	}
+
+	var toInsert []any
+
+	if arr, ok := rendered.([]any); ok && splat {
+		toInsert = arr
+	} else {
+		toInsert = []any{rendered}
+	}
+
+	existing := gjson.GetBytes(body, op.Path)
+	if !existing.Exists() {
+		// Create a new array at the path. For arrayInsertAtIndex with a non-zero index,
+		// the position is effectively clamped to 0 since the array is empty.
+		return sjson.SetBytes(body, op.Path, toInsert)
+	}
+
+	if !existing.IsArray() {
+		return body, fmt.Errorf("path %q is not an array", op.Path)
+	}
+
+	var current []any
+	if err := json.Unmarshal([]byte(existing.Raw), &current); err != nil {
+		return body, fmt.Errorf("decode array at %q: %w", op.Path, err)
+	}
+
+	var pos int
+
+	switch mode {
+	case arrayInsertAtStart:
+		pos = 0
+	case arrayInsertAtEnd:
+		pos = len(current)
+	case arrayInsertAtIndex:
+		if op.Index == nil {
+			return body, fmt.Errorf("array_insert requires an index")
+		}
+
+		pos = *op.Index
+		if pos < 0 {
+			pos = len(current) + pos
+		}
+
+		if pos < 0 {
+			pos = 0
+		}
+
+		if pos > len(current) {
+			pos = len(current)
+		}
+	}
+
+	merged := make([]any, 0, len(current)+len(toInsert))
+	merged = append(merged, current[:pos]...)
+	merged = append(merged, toInsert...)
+	merged = append(merged, current[pos:]...)
+
+	return sjson.SetBytes(body, op.Path, merged)
 }
 
 func applyOverrideOperationToHeaders(
@@ -289,51 +387,6 @@ func applyOverrideRequestHeaders(outbound *PersistentOutboundTransformer) pipeli
 
 		for _, op := range overrideHeaders {
 			applyOverrideOperationToHeaders(ctx, request.Headers, op, renderCtx)
-		}
-
-		return request, nil
-	})
-}
-
-// applyUserAgentPassThrough creates a middleware that applies the User-Agent pass-through setting.
-func applyUserAgentPassThrough(outbound *PersistentOutboundTransformer, systemService *biz.SystemService) pipeline.Middleware {
-	return pipeline.OnRawRequest("user-agent-pass-through", func(ctx context.Context, request *httpclient.Request) (*httpclient.Request, error) {
-		channel := outbound.GetCurrentChannel()
-		if channel == nil {
-			return request, nil
-		}
-
-		var passThroughEnabled bool
-		if channel.Settings != nil && channel.Settings.PassThroughUserAgent != nil {
-			passThroughEnabled = *channel.Settings.PassThroughUserAgent
-		} else {
-			globalPassThrough, err := systemService.UserAgentPassThrough(ctx)
-			if err != nil {
-				log.Warn(ctx, "failed to get global user agent pass through setting", log.Cause(err))
-
-				passThroughEnabled = false
-			} else {
-				passThroughEnabled = globalPassThrough
-			}
-		}
-
-		// Handle User-Agent header based on pass-through setting
-		// This must be done here (before persistRequestExecution) to ensure
-		// the correct User-Agent is logged in request execution records.
-		if request.Headers == nil {
-			request.Headers = make(http.Header)
-		}
-
-		if passThroughEnabled {
-			// Pass-through enabled: use the original client's User-Agent
-			if outbound.state.LlmRequest != nil && outbound.state.LlmRequest.RawRequest != nil {
-				if clientUA := outbound.state.LlmRequest.RawRequest.Headers.Get("User-Agent"); clientUA != "" {
-					request.Headers.Set("User-Agent", clientUA)
-				}
-			}
-		} else {
-			// Pass-through disabled: use AxonHub's default User-Agent
-			request.Headers.Set("User-Agent", "axonhub/1.0")
 		}
 
 		return request, nil

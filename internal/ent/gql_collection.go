@@ -2603,6 +2603,11 @@ func (_q *ProjectQuery) collectField(ctx context.Context, oneNode bool, opCtx *g
 				selectedFields = append(selectedFields, project.FieldStatus)
 				fieldSeen[project.FieldStatus] = struct{}{}
 			}
+		case "profiles":
+			if _, ok := fieldSeen[project.FieldProfiles]; !ok {
+				selectedFields = append(selectedFields, project.FieldProfiles)
+				fieldSeen[project.FieldProfiles] = struct{}{}
+			}
 		case "id":
 		case "__typename":
 		default:
@@ -3530,6 +3535,11 @@ func (_q *RequestQuery) collectField(ctx context.Context, oneNode bool, opCtx *g
 				selectedFields = append(selectedFields, request.FieldMetricsFirstTokenLatencyMs)
 				fieldSeen[request.FieldMetricsFirstTokenLatencyMs] = struct{}{}
 			}
+		case "metricsReasoningDurationMs":
+			if _, ok := fieldSeen[request.FieldMetricsReasoningDurationMs]; !ok {
+				selectedFields = append(selectedFields, request.FieldMetricsReasoningDurationMs)
+				fieldSeen[request.FieldMetricsReasoningDurationMs] = struct{}{}
+			}
 		case "contentSaved":
 			if _, ok := fieldSeen[request.FieldContentSaved]; !ok {
 				selectedFields = append(selectedFields, request.FieldContentSaved)
@@ -3768,6 +3778,11 @@ func (_q *RequestExecutionQuery) collectField(ctx context.Context, oneNode bool,
 			if _, ok := fieldSeen[requestexecution.FieldMetricsFirstTokenLatencyMs]; !ok {
 				selectedFields = append(selectedFields, requestexecution.FieldMetricsFirstTokenLatencyMs)
 				fieldSeen[requestexecution.FieldMetricsFirstTokenLatencyMs] = struct{}{}
+			}
+		case "metricsReasoningDurationMs":
+			if _, ok := fieldSeen[requestexecution.FieldMetricsReasoningDurationMs]; !ok {
+				selectedFields = append(selectedFields, requestexecution.FieldMetricsReasoningDurationMs)
+				fieldSeen[requestexecution.FieldMetricsReasoningDurationMs] = struct{}{}
 			}
 		case "requestHeaders":
 			if _, ok := fieldSeen[requestexecution.FieldRequestHeaders]; !ok {

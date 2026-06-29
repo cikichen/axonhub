@@ -45,12 +45,23 @@ server:
     exposed_headers: []         # Exposed headers (env: AXONHUB_SERVER_CORS_EXPOSED_HEADERS)
     allow_credentials: true     # Allow credentials (env: AXONHUB_SERVER_CORS_ALLOW_CREDENTIALS)
     max_age: 1m                  # Max age for preflight cache in seconds (env: AXONHUB_SERVER_CORS_MAX_AGE)
+  api:
+    auth:
+      allow_no_auth: false       # Allow requests without API key (env: AXONHUB_SERVER_API_AUTH_ALLOW_NO_AUTH)
+      key_prefix: "ah"           # API key prefix (env: AXONHUB_SERVER_API_AUTH_KEY_PREFIX)
+                                 # Default: "ah"
+                                 # Examples: "sk" generates "sk-<64hex>", "myapp" generates "myapp-<64hex>"
 
 # Database configuration
 db:
   dialect: "sqlite3"            # Database dialect: sqlite3, postgres, mysql (env: AXONHUB_DB_DIALECT)
-  dsn: "file:axonhub.db?cache=shared&_fk=1"  # Database connection string (env: AXONHUB_DB_DSN)
+  dsn: "file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)"  # Database connection string (env: AXONHUB_DB_DSN)
+  disable_sqlite_auto_wal: false # Disable auto-enabling WAL mode for SQLite (env: AXONHUB_DB_DISABLE_SQLITE_AUTO_WAL)
   debug: false                  # Enable database debug logging (env: AXONHUB_DB_DEBUG)
+  max_open_conns: 20            # Maximum open DB connections shared by the app (env: AXONHUB_DB_MAX_OPEN_CONNS)
+  max_idle_conns: 10            # Maximum idle DB connections kept in the pool (env: AXONHUB_DB_MAX_IDLE_CONNS)
+  conn_max_lifetime: "30m"      # Recycle DB connections before server/network timeouts (env: AXONHUB_DB_CONN_MAX_LIFETIME)
+  conn_max_idle_time: "10m"     # Close long-idle pooled connections (env: AXONHUB_DB_CONN_MAX_IDLE_TIME)
 
 # Cache configuration
 cache:
@@ -107,7 +118,7 @@ log:
 metrics:
   enabled: false                 # Enable metrics collection (env: AXONHUB_METRICS_ENABLED)
   exporter: 
-    type: "oltphttp"          # Metrics exporter type: prometheus, console (env: AXONHUB_METRICS_EXPORTER_TYPE)
+    type: "otlphttp"          # Metrics exporter type: stdout, otlpgrpc, otlphttp (env: AXONHUB_METRICS_EXPORTER_TYPE)
     endpoint: "localhost:8080" # Metrics exporter endpoint (env: AXONHUB_METRICS_EXPORTER_ENDPOINT)
     insecure: true             # Enable insecure connection (env: AXONHUB_METRICS_EXPORTER_INSECURE)
     

@@ -8,6 +8,7 @@ import { useErrorHandler } from '@/hooks/use-error-handler';
 import {
   Channel,
   ChannelConnection,
+  ChannelSummaryConnection,
   CreateChannelInput,
   UpdateChannelInput,
   channelConnectionSchema,
@@ -18,12 +19,14 @@ import {
   BulkUpdateChannelOrderingInput,
   BulkUpdateChannelOrderingResult,
   bulkUpdateChannelOrderingResultSchema,
-  channelOrderingConnectionSchema,
+  channelSummaryConnectionSchema,
   ChannelSettings,
   ChannelPolicies,
   ChannelModelPrice,
   SaveChannelModelPriceInput,
   channelModelPriceSchema,
+  TestChannelAPIKeysPayload,
+  testChannelAPIKeysPayloadSchema,
 } from './schema';
 
 const QUERY_CHANNEL_NAMES_QUERY = `
@@ -99,6 +102,7 @@ const CREATE_CHANNEL_MUTATION = `
             replaceDeveloperRoleWithSystem
           }
           passThroughUserAgent
+          passThroughBody
         }
       orderingWeight
       remark
@@ -146,6 +150,7 @@ const BULK_CREATE_CHANNELS_MUTATION = `
             replaceDeveloperRoleWithSystem
           }
           passThroughUserAgent
+          passThroughBody
         }
       orderingWeight
       remark
@@ -193,6 +198,7 @@ const UPDATE_CHANNEL_MUTATION = `
             replaceDeveloperRoleWithSystem
           }
           passThroughUserAgent
+          passThroughBody
         }
       orderingWeight
       errorMessage
@@ -257,6 +263,24 @@ const TEST_CHANNEL_MUTATION = `
   }
 `;
 
+const TEST_CHANNEL_API_KEYS_MUTATION = `
+  mutation TestChannelAPIKeys($channelID: ID!, $modelID: String) {
+    testChannelAPIKeys(channelID: $channelID, modelID: $modelID) {
+      channelID
+      total
+      successCount
+      failedCount
+      results {
+        keyPrefix
+        success
+        latency
+        error
+        disabled
+      }
+    }
+  }
+`;
+
 const BULK_IMPORT_CHANNELS_MUTATION = `
   mutation BulkImportChannels($input: BulkImportChannelsInput!) {
     bulkImportChannels(input: $input) {
@@ -293,6 +317,7 @@ const BULK_IMPORT_CHANNELS_MUTATION = `
             replaceDeveloperRoleWithSystem
           }
           passThroughUserAgent
+          passThroughBody
         }
       }
     }
@@ -300,6 +325,12 @@ const BULK_IMPORT_CHANNELS_MUTATION = `
 `;
 
 // Channel API Key Management Mutations
+const DISABLE_CHANNEL_API_KEY_MUTATION = `
+  mutation DisableChannelAPIKey($channelID: ID!, $key: String!) {
+    disableChannelAPIKey(channelID: $channelID, key: $key)
+  }
+`;
+
 const ENABLE_CHANNEL_API_KEY_MUTATION = `
   mutation EnableChannelAPIKey($channelID: ID!, $key: String!) {
     enableChannelAPIKey(channelID: $channelID, key: $key)
@@ -459,41 +490,27 @@ const BULK_UPDATE_CHANNEL_ORDERING_MUTATION = `
             replaceDeveloperRoleWithSystem
           }
           passThroughUserAgent
+          passThroughBody
         }
       }
     }
   }
 `;
 
-const ALL_CHANNELS_QUERY = `
-  query GetAllChannels {
-    channels(
-      first: 1000,
-      orderBy: { field: ORDERING_WEIGHT, direction: DESC }
-      where: { statusIn: [enabled, disabled] }
-    ) {
-      totalCount
-      edges {
-        node {
-          id
-          name
-          type
-          status
-          policies {
-            stream
-          }
-          baseURL
-          orderingWeight
-          tags
-          supportedModels
-          autoSyncSupportedModels
-          manualModels
-          allModelEntries {
-            requestModel
-            actualModel
-            source
-          }
-        }
+const ALL_CHANNEL_SUMMARYS_QUERY = `
+  query GetAllChannelSummarys($includeArchived: Boolean) {
+    allChannelSummarys(includeArchived: $includeArchived) {
+      id
+      name
+      type
+      status
+      baseURL
+      orderingWeight
+      tags
+      allModelEntries {
+        requestModel
+        actualModel
+        source
       }
     }
   }
@@ -571,6 +588,8 @@ const QUERY_CHANNELS_QUERY = `
               to
               value
               condition
+              index
+              splat
             }
             headerOverrideOperations {
               op
@@ -579,6 +598,8 @@ const QUERY_CHANNELS_QUERY = `
               to
               value
               condition
+              index
+              splat
             }
             proxy {
               type
@@ -592,6 +613,12 @@ const QUERY_CHANNELS_QUERY = `
               replaceDeveloperRoleWithSystem
             }
             passThroughUserAgent
+            passThroughBody
+            rateLimit {
+              rpm
+              tpm
+              maxConcurrent
+            }
           }
           orderingWeight
           errorMessage
@@ -630,7 +657,7 @@ export function useChannelModelPrices(channelId: string) {
         const node = data.node as { channelModelPrices: ChannelModelPrice[] };
         return (node?.channelModelPrices || []).map((p) => channelModelPriceSchema.parse(p));
       } catch (error) {
-        handleError(error, t('channels.errors.fetchPrices'));
+        handleError(error, t('common.errors.internalServerError'));
         throw error;
       }
     },
@@ -641,21 +668,24 @@ export function useChannelModelPrices(channelId: string) {
 export function useSaveChannelModelPrices() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async ({ channelId, input }: { channelId: string; input: SaveChannelModelPriceInput[] }) => {
-      const data = await graphqlRequest<{ saveChannelModelPrices: ChannelModelPrice[] }>(SAVE_CHANNEL_MODEL_PRICES_MUTATION, {
-        channelId,
-        input,
-      });
-      return data.saveChannelModelPrices.map((p) => channelModelPriceSchema.parse(p));
+      try {
+        const data = await graphqlRequest<{ saveChannelModelPrices: ChannelModelPrice[] }>(SAVE_CHANNEL_MODEL_PRICES_MUTATION, {
+          channelId,
+          input,
+        });
+        return data.saveChannelModelPrices.map((p) => channelModelPriceSchema.parse(p));
+      } catch (error) {
+        handleError(error, { context: 'Save Channel Model Prices' });
+        throw error;
+      }
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channelModelPrices', variables.channelId] });
       toast.success(t('channels.messages.savePricesSuccess'));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -703,7 +733,7 @@ export function useQueryChannels(
         const data = await graphqlRequest<{ queryChannels: ChannelConnection }>(QUERY_CHANNELS_QUERY, { input: variables });
         return channelConnectionSchema.parse(data?.queryChannels);
       } catch (error) {
-        handleError(error, t('channels.errors.fetchList'));
+        handleError(error, t('common.errors.internalServerError'));
         throw error;
       }
     },
@@ -745,7 +775,7 @@ export function useAllChannelNames(options?: { enabled?: boolean }) {
 
         return names;
       } catch (error) {
-        handleError(error, t('channels.errors.fetchNames'));
+        handleError(error, t('common.errors.internalServerError'));
         throw error;
       }
     },
@@ -757,6 +787,7 @@ export function useAllChannelNames(options?: { enabled?: boolean }) {
 export function useCreateChannel() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (input: CreateChannelInput) => {
@@ -768,7 +799,7 @@ export function useCreateChannel() {
       toast.success(t('channels.messages.createSuccess'));
     },
     onError: (error) => {
-      toast.error(t('channels.messages.createError', { error: error.message }));
+      handleError(error, { context: t('channels.dialogs.create.title') });
     },
   });
 }
@@ -791,18 +822,21 @@ export interface BulkCreateChannelsInput {
 export function useBulkCreateChannels() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (input: BulkCreateChannelsInput) => {
-      const data = await graphqlRequest<{ bulkCreateChannels: Channel[] }>(BULK_CREATE_CHANNELS_MUTATION, { input });
-      return data.bulkCreateChannels.map((ch) => channelSchema.parse(ch));
+      try {
+        const data = await graphqlRequest<{ bulkCreateChannels: Channel[] }>(BULK_CREATE_CHANNELS_MUTATION, { input });
+        return data.bulkCreateChannels.map((ch) => channelSchema.parse(ch));
+      } catch (error) {
+        handleError(error, { context: 'Batch Create Channels' });
+        throw error;
+      }
     },
     onSuccess: (channels) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       toast.success(t('channels.messages.batchCreateSuccess', { count: channels.length }));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -810,6 +844,7 @@ export function useBulkCreateChannels() {
 export function useUpdateChannel() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async ({ id, input }: { id: string; input: UpdateChannelInput }) => {
@@ -822,7 +857,7 @@ export function useUpdateChannel() {
       toast.success(t('channels.messages.updateSuccess'));
     },
     onError: (error) => {
-      toast.error(t('channels.messages.updateError', { error: error.message }));
+      handleError(error, { context: t('channels.dialogs.edit.title') });
     },
   });
 }
@@ -830,14 +865,20 @@ export function useUpdateChannel() {
 export function useClearChannelErrorMessage() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async ({ id }: { id: string }) => {
-      const data = await graphqlRequest<{ updateChannel: Channel }>(UPDATE_CHANNEL_MUTATION, {
-        id,
-        input: { clearErrorMessage: true },
-      });
-      return channelSchema.parse(data.updateChannel);
+      try {
+        const data = await graphqlRequest<{ updateChannel: Channel }>(UPDATE_CHANNEL_MUTATION, {
+          id,
+          input: { clearErrorMessage: true },
+        });
+        return channelSchema.parse(data.updateChannel);
+      } catch (error) {
+        handleError(error, { context: 'Clear Channel Error' });
+        throw error;
+      }
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
@@ -845,23 +886,26 @@ export function useClearChannelErrorMessage() {
       queryClient.invalidateQueries({ queryKey: ['errorChannelsCount'] });
       toast.success(t('channels.messages.errorResolvedSuccess'));
     },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
-    },
   });
 }
 
 export function useUpdateChannelStatus() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async ({ id, status }: { id: string; status: 'enabled' | 'disabled' | 'archived' }) => {
-      const data = await graphqlRequest<{ updateChannelStatus: boolean }>(UPDATE_CHANNEL_STATUS_MUTATION, {
-        id,
-        status,
-      });
-      return data.updateChannelStatus;
+      try {
+        const data = await graphqlRequest<{ updateChannelStatus: boolean }>(UPDATE_CHANNEL_STATUS_MUTATION, {
+          id,
+          status,
+        });
+        return data.updateChannelStatus;
+      } catch (error) {
+        handleError(error, { context: 'Update Channel Status' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
@@ -876,27 +920,27 @@ export function useUpdateChannelStatus() {
 
       toast.success(variables.status === 'archived' ? t(messageKey) : t(messageKey, { status: statusText }));
     },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
-    },
   });
 }
 
 export function useBulkArchiveChannels() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      const data = await graphqlRequest<{ bulkArchiveChannels: boolean }>(BULK_ARCHIVE_CHANNELS_MUTATION, { ids });
-      return data.bulkArchiveChannels;
+      try {
+        const data = await graphqlRequest<{ bulkArchiveChannels: boolean }>(BULK_ARCHIVE_CHANNELS_MUTATION, { ids });
+        return data.bulkArchiveChannels;
+      } catch (error) {
+        handleError(error, { context: 'Bulk Archive Channels' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       toast.success(t('channels.messages.bulkArchiveSuccess', { count: variables.length }));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -904,18 +948,21 @@ export function useBulkArchiveChannels() {
 export function useBulkDisableChannels() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      const data = await graphqlRequest<{ bulkDisableChannels: boolean }>(BULK_DISABLE_CHANNELS_MUTATION, { ids });
-      return data.bulkDisableChannels;
+      try {
+        const data = await graphqlRequest<{ bulkDisableChannels: boolean }>(BULK_DISABLE_CHANNELS_MUTATION, { ids });
+        return data.bulkDisableChannels;
+      } catch (error) {
+        handleError(error, { context: 'Bulk Disable Channels' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       toast.success(t('channels.messages.bulkDisableSuccess', { count: variables.length }));
-    },
-    onError: (error) => {
-      toast.error(t('channels.messages.bulkDisableError', { error: error.message }));
     },
   });
 }
@@ -923,18 +970,21 @@ export function useBulkDisableChannels() {
 export function useBulkEnableChannels() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      const data = await graphqlRequest<{ bulkEnableChannels: boolean }>(BULK_ENABLE_CHANNELS_MUTATION, { ids });
-      return data.bulkEnableChannels;
+      try {
+        const data = await graphqlRequest<{ bulkEnableChannels: boolean }>(BULK_ENABLE_CHANNELS_MUTATION, { ids });
+        return data.bulkEnableChannels;
+      } catch (error) {
+        handleError(error, { context: 'Bulk Enable Channels' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       toast.success(t('channels.messages.bulkEnableSuccess', { count: variables.length }));
-    },
-    onError: (error) => {
-      toast.error(t('channels.messages.bulkEnableError', { error: error.message }));
     },
   });
 }
@@ -942,19 +992,22 @@ export function useBulkEnableChannels() {
 export function useBulkRecoverChannels() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      const data = await graphqlRequest<{ bulkRecoverChannels: boolean }>(BULK_RECOVER_CHANNELS_MUTATION, { ids });
-      return data.bulkRecoverChannels;
+      try {
+        const data = await graphqlRequest<{ bulkRecoverChannels: boolean }>(BULK_RECOVER_CHANNELS_MUTATION, { ids });
+        return data.bulkRecoverChannels;
+      } catch (error) {
+        handleError(error, { context: 'Bulk Recover Channels' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       queryClient.invalidateQueries({ queryKey: ['errorChannelsCount'] });
       toast.success(t('channels.messages.bulkRecoverSuccess', { count: variables.length }));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -962,18 +1015,21 @@ export function useBulkRecoverChannels() {
 export function useDeleteChannel() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (id: string) => {
-      const data = await graphqlRequest<{ deleteChannel: boolean }>(DELETE_CHANNEL_MUTATION, { id });
-      return data.deleteChannel;
+      try {
+        const data = await graphqlRequest<{ deleteChannel: boolean }>(DELETE_CHANNEL_MUTATION, { id });
+        return data.deleteChannel;
+      } catch (error) {
+        handleError(error, { context: 'Delete Channel' });
+        throw error;
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       toast.success(t('channels.messages.deleteSuccess'));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -981,24 +1037,28 @@ export function useDeleteChannel() {
 export function useBulkDeleteChannels() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      const data = await graphqlRequest<{ bulkDeleteChannels: boolean }>(BULK_DELETE_CHANNELS_MUTATION, { ids });
-      return data.bulkDeleteChannels;
+      try {
+        const data = await graphqlRequest<{ bulkDeleteChannels: boolean }>(BULK_DELETE_CHANNELS_MUTATION, { ids });
+        return data.bulkDeleteChannels;
+      } catch (error) {
+        handleError(error, { context: 'Bulk Delete Channels' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       toast.success(t('channels.messages.bulkDeleteSuccess', { count: variables.length }));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
 
 export function useTestChannel(options?: { silent?: boolean }) {
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
   const silent = options?.silent ?? false;
 
   return useMutation({
@@ -1011,15 +1071,22 @@ export function useTestChannel(options?: { silent?: boolean }) {
       modelID?: string;
       proxy?: { type: string; url?: string; username?: string; password?: string };
     }) => {
-      const data = await graphqlRequest<{
-        testChannel: {
-          latency: number;
-          success: boolean;
-          message?: string | null;
-          error?: string | null;
-        };
-      }>(TEST_CHANNEL_MUTATION, { input: { channelID, modelID, proxy } });
-      return data.testChannel;
+      try {
+        const data = await graphqlRequest<{
+          testChannel: {
+            latency: number;
+            success: boolean;
+            message?: string | null;
+            error?: string | null;
+          };
+        }>(TEST_CHANNEL_MUTATION, { input: { channelID, modelID, proxy } });
+        return data.testChannel;
+      } catch (error) {
+        if (!silent) {
+          handleError(error, { context: 'Test Channel' });
+        }
+        throw error;
+      }
     },
     onSuccess: (data) => {
       if (silent) {
@@ -1034,13 +1101,40 @@ export function useTestChannel(options?: { silent?: boolean }) {
         toast.error(errorMsg);
       }
     },
-    onError: (error) => {
+  });
+}
+
+export function useTestChannelAPIKeys(options?: { silent?: boolean }) {
+  const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
+  const silent = options?.silent ?? false;
+
+  return useMutation({
+    mutationFn: async ({ channelID, modelID }: { channelID: string; modelID?: string }) => {
+      try {
+        const data = await graphqlRequest<{ testChannelAPIKeys: TestChannelAPIKeysPayload }>(TEST_CHANNEL_API_KEYS_MUTATION, {
+          channelID,
+          modelID,
+        });
+        return testChannelAPIKeysPayloadSchema.parse(data.testChannelAPIKeys);
+      } catch (error) {
+        if (!silent) {
+          handleError(error, { context: 'Test Channel API Keys' });
+        }
+        throw error;
+      }
+    },
+    onSuccess: (data) => {
       if (silent) {
         return;
       }
 
-      // Handle GraphQL/network errors
-      toast.error(t('common.errors.internalServerError'));
+      if (data.failedCount === 0) {
+        toast.success(t('channels.dialogs.testAPIKeys.successSummary', { success: data.successCount, total: data.total }));
+        return;
+      }
+
+      toast.error(t('channels.dialogs.testAPIKeys.successSummary', { success: data.successCount, total: data.total }));
     },
   });
 }
@@ -1048,11 +1142,17 @@ export function useTestChannel(options?: { silent?: boolean }) {
 export function useBulkImportChannels() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (input: BulkImportChannelsInput) => {
-      const data = await graphqlRequest<{ bulkImportChannels: BulkImportChannelsResult }>(BULK_IMPORT_CHANNELS_MUTATION, { input });
-      return bulkImportChannelsResultSchema.parse(data.bulkImportChannels);
+      try {
+        const data = await graphqlRequest<{ bulkImportChannels: BulkImportChannelsResult }>(BULK_IMPORT_CHANNELS_MUTATION, { input });
+        return bulkImportChannelsResultSchema.parse(data.bulkImportChannels);
+      } catch (error) {
+        handleError(error, { context: 'Bulk Import Channels' });
+        throw error;
+      }
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
@@ -1072,54 +1172,62 @@ export function useBulkImportChannels() {
         );
       }
     },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
-    },
   });
 }
 
-export function useAllChannelsForOrdering(options?: { enabled?: boolean }) {
+export function useAllChannelSummarys(projectId?: string | null, options?: { enabled?: boolean; includeArchived?: boolean }) {
   const { handleError } = useErrorHandler();
   const { t } = useTranslation();
 
   return useQuery({
-    queryKey: ['allChannelsForOrdering'],
+    queryKey: ['allChannelSummarys', projectId, options?.includeArchived],
     queryFn: async () => {
       try {
-        const data = await graphqlRequest<{ channels: ChannelConnection }>(ALL_CHANNELS_QUERY);
-        return channelOrderingConnectionSchema.parse(data?.channels);
+        const headers = projectId ? { 'X-Project-ID': projectId } : undefined;
+        const data = await graphqlRequest<{ allChannelSummarys: ChannelSummaryConnection['edges'][number]['node'][] }>(
+          ALL_CHANNEL_SUMMARYS_QUERY,
+          { includeArchived: options?.includeArchived },
+          headers
+        );
+        return channelSummaryConnectionSchema.parse({
+          edges: (data?.allChannelSummarys || []).map((node) => ({ node })),
+          totalCount: data?.allChannelSummarys?.length || 0,
+        });
       } catch (error) {
-        handleError(error, t('channels.errors.fetchOrdering'));
+        handleError(error, t('common.errors.internalServerError'));
         throw error;
       }
     },
-    enabled: options?.enabled !== false, // Default to true, only disable if explicitly set to false
+    enabled: options?.enabled !== false,
   });
 }
 
 export function useBulkUpdateChannelOrdering() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (input: BulkUpdateChannelOrderingInput) => {
-      const data = await graphqlRequest<{ bulkUpdateChannelOrdering: BulkUpdateChannelOrderingResult }>(
-        BULK_UPDATE_CHANNEL_ORDERING_MUTATION,
-        { input }
-      );
-      return bulkUpdateChannelOrderingResultSchema.parse(data.bulkUpdateChannelOrdering);
+      try {
+        const data = await graphqlRequest<{ bulkUpdateChannelOrdering: BulkUpdateChannelOrderingResult }>(
+          BULK_UPDATE_CHANNEL_ORDERING_MUTATION,
+          { input }
+        );
+        return bulkUpdateChannelOrderingResultSchema.parse(data.bulkUpdateChannelOrdering);
+      } catch (error) {
+        handleError(error, { context: 'Update Channel Ordering' });
+        throw error;
+      }
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
-      queryClient.invalidateQueries({ queryKey: ['allChannelsForOrdering'] });
+      queryClient.invalidateQueries({ queryKey: ['allChannelSummarys'] });
       toast.success(
         t('channels.messages.orderingUpdateSuccess', {
           updated: data.updated,
         })
       );
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -1141,38 +1249,47 @@ const syncChannelModelsPayloadSchema = z.object({
 export function useSyncChannelModels() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (input: { channelID: string; pattern?: string }) => {
-      const data = await graphqlRequest<{ syncChannelModels: unknown }>(SYNC_CHANNEL_MODELS_MUTATION, input);
-      return syncChannelModelsPayloadSchema.parse(data.syncChannelModels);
+      try {
+        const data = await graphqlRequest<{ syncChannelModels: unknown }>(SYNC_CHANNEL_MODELS_MUTATION, input);
+        return syncChannelModelsPayloadSchema.parse(data.syncChannelModels);
+      } catch (error) {
+        handleError(error, { context: 'Sync Channel Models' });
+        throw error;
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       toast.success(t('channels.messages.syncModelsSuccess'));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
 
 export function useFetchModels() {
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (input: { channelType: string; baseURL: string; apiKey?: string; channelID?: string }) => {
-      const data = await graphqlRequest<{
-        fetchModels: {
-          models: Array<{ id: string }>;
-          error?: string | null;
-        };
-      }>(FETCH_MODELS_QUERY, { input });
-      return data.fetchModels;
+      try {
+        const data = await graphqlRequest<{
+          fetchModels: {
+            models: Array<{ id: string }>;
+            error?: string | null;
+          };
+        }>(FETCH_MODELS_QUERY, { input });
+        return data.fetchModels;
+      } catch (error) {
+        handleError(error, { context: 'Fetch Models' });
+        throw error;
+      }
     },
-    onSuccess: (data) => {
+    onSuccess: (data, variables, context) => {
       if (data.error) {
-        toast.error(t('channels.messages.fetchModelsError', { error: data.error }));
+        toast.error(t('common.errors.internalServerError'));
       } else {
         const count = data.models.length;
         if (count > 100) {
@@ -1181,9 +1298,6 @@ export function useFetchModels() {
           toast.success(t('channels.messages.fetchModelsSuccess', { count }));
         }
       }
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -1208,7 +1322,7 @@ export function useChannelTypes(statusIn?: string[]) {
         const data = await graphqlRequest<{ countChannelsByType: ChannelTypeCount[] }>(CHANNEL_TYPES_QUERY, { input });
         return data.countChannelsByType || [];
       } catch (error) {
-        handleError(error, t('channels.errors.fetchTypes'));
+        handleError(error, t('common.errors.internalServerError'));
         throw error;
       }
     },
@@ -1238,7 +1352,7 @@ export function useErrorChannelsCount() {
         const data = await graphqlRequest<{ channels: { totalCount: number } }>(ERROR_CHANNELS_COUNT_QUERY);
         return data.channels.totalCount;
       } catch (error) {
-        handleError(error, t('channels.errors.fetchList'));
+        handleError(error, t('common.errors.internalServerError'));
         throw error;
       }
     },
@@ -1246,18 +1360,19 @@ export function useErrorChannelsCount() {
   });
 }
 
-export function useAllChannelTags() {
+export function useAllChannelTags(projectId?: string | null) {
   const { handleError } = useErrorHandler();
   const { t } = useTranslation();
 
   return useQuery({
-    queryKey: ['allChannelTags'],
+    queryKey: ['allChannelTags', projectId],
     queryFn: async () => {
       try {
-        const data = await graphqlRequest<{ allChannelTags: string[] }>(ALL_CHANNEL_TAGS_QUERY);
+        const headers = projectId ? { 'X-Project-ID': projectId } : undefined;
+        const data = await graphqlRequest<{ allChannelTags: string[] }>(ALL_CHANNEL_TAGS_QUERY, undefined, headers);
         return data.allChannelTags || [];
       } catch (error) {
-        handleError(error, t('channels.errors.fetchTags'));
+        handleError(error, t('common.errors.internalServerError'));
         throw error;
       }
     },
@@ -1293,7 +1408,7 @@ export function useChannelProbeData(channelIDs: string[], options?: { enabled?: 
         });
         return data.channelProbeData || [];
       } catch (error) {
-        handleError(error, t('channels.errors.fetchProbeData'));
+        handleError(error, t('common.errors.internalServerError'));
         return [];
       }
     },
@@ -1324,7 +1439,7 @@ export function useChannelDisabledAPIKeys(channelId: string, options?: { enabled
         }>(GET_CHANNEL_DISABLED_API_KEYS_QUERY, { id: channelId });
         return data.node?.disabledAPIKeys || [];
       } catch (error) {
-        handleError(error, t('channels.errors.fetchDisabledAPIKeys'));
+        handleError(error, t('common.errors.internalServerError'));
         return [];
       }
     },
@@ -1332,25 +1447,54 @@ export function useChannelDisabledAPIKeys(channelId: string, options?: { enabled
   });
 }
 
-export function useEnableChannelAPIKey() {
+export function useDisableChannelAPIKey() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async ({ channelID, key }: { channelID: string; key: string }) => {
-      const data = await graphqlRequest<{ enableChannelAPIKey: boolean }>(ENABLE_CHANNEL_API_KEY_MUTATION, {
-        channelID,
-        key,
-      });
-      return data.enableChannelAPIKey;
+      try {
+        const data = await graphqlRequest<{ disableChannelAPIKey: boolean }>(DISABLE_CHANNEL_API_KEY_MUTATION, {
+          channelID,
+          key,
+        });
+        return data.disableChannelAPIKey;
+      } catch (error) {
+        handleError(error, { context: 'Disable Channel API Key' });
+        throw error;
+      }
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['channelDisabledAPIKeys', variables.channelID] });
+      queryClient.invalidateQueries({ queryKey: ['channels'] });
+      toast.success(t('channels.messages.disableAPIKeySuccess'));
+    },
+  });
+}
+
+export function useEnableChannelAPIKey() {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
+
+  return useMutation({
+    mutationFn: async ({ channelID, key }: { channelID: string; key: string }) => {
+      try {
+        const data = await graphqlRequest<{ enableChannelAPIKey: boolean }>(ENABLE_CHANNEL_API_KEY_MUTATION, {
+          channelID,
+          key,
+        });
+        return data.enableChannelAPIKey;
+      } catch (error) {
+        handleError(error, { context: 'Enable Channel API Key' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channelDisabledAPIKeys', variables.channelID] });
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       toast.success(t('channels.messages.enableAPIKeySuccess'));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -1358,21 +1502,24 @@ export function useEnableChannelAPIKey() {
 export function useEnableAllChannelAPIKeys() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async ({ channelID }: { channelID: string }) => {
-      const data = await graphqlRequest<{ enableAllChannelAPIKeys: boolean }>(ENABLE_ALL_CHANNEL_API_KEYS_MUTATION, {
-        channelID,
-      });
-      return data.enableAllChannelAPIKeys;
+      try {
+        const data = await graphqlRequest<{ enableAllChannelAPIKeys: boolean }>(ENABLE_ALL_CHANNEL_API_KEYS_MUTATION, {
+          channelID,
+        });
+        return data.enableAllChannelAPIKeys;
+      } catch (error) {
+        handleError(error, { context: 'Enable All Channel API Keys' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channelDisabledAPIKeys', variables.channelID] });
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       toast.success(t('channels.messages.enableAllAPIKeysSuccess'));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -1380,22 +1527,25 @@ export function useEnableAllChannelAPIKeys() {
 export function useEnableSelectedChannelAPIKeys() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async ({ channelID, keys }: { channelID: string; keys: string[] }) => {
-      const data = await graphqlRequest<{ enableSelectedChannelAPIKeys: boolean }>(
-        ENABLE_SELECTED_CHANNEL_API_KEYS_MUTATION,
-        { channelID, keys }
-      );
-      return data.enableSelectedChannelAPIKeys;
+      try {
+        const data = await graphqlRequest<{ enableSelectedChannelAPIKeys: boolean }>(
+          ENABLE_SELECTED_CHANNEL_API_KEYS_MUTATION,
+          { channelID, keys }
+        );
+        return data.enableSelectedChannelAPIKeys;
+      } catch (error) {
+        handleError(error, { context: 'Enable Selected API Keys' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channelDisabledAPIKeys', variables.channelID] });
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       toast.success(t('channels.messages.enableSelectedAPIKeysSuccess'));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -1403,14 +1553,20 @@ export function useEnableSelectedChannelAPIKeys() {
 export function useDeleteDisabledChannelAPIKeys() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async ({ channelID, keys }: { channelID: string; keys: string[] }) => {
-      const data = await graphqlRequest<{ deleteDisabledChannelAPIKeys: { success: boolean; message?: string } }>(
-        DELETE_DISABLED_CHANNEL_API_KEYS_MUTATION,
-        { channelID, keys }
-      );
-      return data.deleteDisabledChannelAPIKeys;
+      try {
+        const data = await graphqlRequest<{ deleteDisabledChannelAPIKeys: { success: boolean; message?: string } }>(
+          DELETE_DISABLED_CHANNEL_API_KEYS_MUTATION,
+          { channelID, keys }
+        );
+        return data.deleteDisabledChannelAPIKeys;
+      } catch (error) {
+        handleError(error, { context: 'Delete Disabled API Keys' });
+        throw error;
+      }
     },
     onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['channelDisabledAPIKeys', variables.channelID] });
@@ -1422,9 +1578,6 @@ export function useDeleteDisabledChannelAPIKeys() {
       } else {
         toast.success(t('channels.messages.deleteDisabledAPIKeysSuccess'));
       }
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }

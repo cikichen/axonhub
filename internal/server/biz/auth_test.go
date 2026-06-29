@@ -103,13 +103,14 @@ func setupTestAuthService(t *testing.T, cacheConfig xcache.Config) (*AuthService
 	}
 
 	projectService := &ProjectService{
-		ProjectCache: xcache.NewFromConfig[ent.Project](cacheConfig),
+		ProjectCache: xcache.NewFromConfig[xcache.Entry[ent.Project]](cacheConfig),
 	}
 
 	apiKeyService := NewAPIKeyService(APIKeyServiceParams{
 		CacheConfig:    cacheConfig,
 		Ent:            client,
 		ProjectService: projectService,
+		KeyPrefix:      "ah",
 	})
 
 	authService := &AuthService{
@@ -362,7 +363,7 @@ func TestAuthService_AuthenticateAPIKey(t *testing.T) {
 	require.NoError(t, err)
 
 	// Generate API key
-	apiKeyString, err := GenerateAPIKey()
+	apiKeyString, err := GenerateAPIKey("ah")
 	require.NoError(t, err)
 
 	// Create API key in database
@@ -617,7 +618,7 @@ func TestAuthService_CacheExpiration(t *testing.T) {
 	require.NoError(t, err)
 
 	// Generate API key
-	apiKeyString, err := GenerateAPIKey()
+	apiKeyString, err := GenerateAPIKey("ah")
 	require.NoError(t, err)
 
 	apiKey, err := client.APIKey.Create().

@@ -29,7 +29,7 @@ server:
 
 db:
   dialect: "sqlite3"
-  dsn: "file:axonhub.db?cache=shared&_fk=1"
+  dsn: "file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)"
 
 log:
   level: "info"
@@ -43,7 +43,7 @@ All configuration options can be set via environment variables:
 ```bash
 export AXONHUB_SERVER_PORT=8090
 export AXONHUB_DB_DIALECT="sqlite3"
-export AXONHUB_DB_DSN="file:axonhub.db?cache=shared&_fk=1"
+export AXONHUB_DB_DSN="file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)"
 export AXONHUB_LOG_LEVEL="info"
 ```
 
@@ -91,7 +91,7 @@ server:
 ```yaml
 db:
   dialect: "sqlite3"            # sqlite3, postgres, mysql, tidb
-  dsn: "file:axonhub.db?cache=shared&_fk=1"  # Connection string
+  dsn: "file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)"  # Connection string
   debug: false                  # Enable database debug logging
 ```
 
@@ -191,7 +191,7 @@ log:
 metrics:
   enabled: false                 # Enable metrics collection
   exporter:
-    type: "oltphttp"            # prometheus, console
+    type: "otlphttp"            # stdout, otlpgrpc, otlphttp
     endpoint: "localhost:8080"  # Metrics exporter endpoint
     insecure: true              # Enable insecure connection
 ```
@@ -345,7 +345,7 @@ log:
 ### SQLite
 
 ```
-file:axonhub.db?cache=shared&_fk=1
+file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)
 ```
 
 ### PostgreSQL
@@ -411,7 +411,7 @@ username:password@tcp(host:3306)/database?parseTime=True&multiStatements=true&ch
    metrics:
      enabled: true
      exporter:
-       type: "prometheus"
+       type: "otlphttp"
    ```
 
 ### Troubleshooting

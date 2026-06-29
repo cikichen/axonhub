@@ -459,8 +459,13 @@ func (p *DeviceFlowProvider) StopAutoRefresh() {
 	}
 
 	if exec != nil {
-		if err := exec.Shutdown(context.Background()); err != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+
+		if err := exec.Shutdown(shutdownCtx); err != nil {
 			slog.WarnContext(context.Background(), "failed to shutdown device flow auto refresh executor", slog.Any("error", err))
+		} else {
+			slog.DebugContext(context.Background(), "device flow auto refresh executor shutdown completed")
 		}
 	}
 }
@@ -509,15 +514,71 @@ func (p *DeviceFlowProvider) scheduleNextAutoRefresh(
 		}
 
 		// Ensure credentials are fresh
+		refreshFailed := false
 		if _, err := p.GetToken(autoCtx); err != nil {
 			slog.WarnContext(autoCtx, "failed to auto refresh device flow token", slog.Any("error", err))
+			refreshFailed = true
 		}
 
 		if autoCtx.Err() != nil {
 			return
 		}
 
-		p.scheduleNextAutoRefresh(autoCtx, exec, refreshBefore, fallbackInterval, false)
+		if refreshFailed {
+			p.scheduleNextAutoRefreshWithDelay(autoCtx, exec, refreshBefore, fallbackInterval, fallbackInterval)
+		} else {
+			p.scheduleNextAutoRefresh(autoCtx, exec, refreshBefore, fallbackInterval, false)
+		}
+	}, delay)
+	if err != nil {
+		p.StopAutoRefresh()
+		return
+	}
+
+	p.autoMu.Lock()
+
+	if p.autoCancel == nil || p.autoExecutor == nil || exec != p.autoExecutor {
+		p.autoMu.Unlock()
+		cancelFunc()
+		return
+	}
+
+	p.autoTaskCancel = cancelFunc
+	p.autoMu.Unlock()
+}
+
+func (p *DeviceFlowProvider) scheduleNextAutoRefreshWithDelay(
+	autoCtx context.Context,
+	exec executors.ScheduledExecutor,
+	refreshBefore time.Duration,
+	fallbackInterval time.Duration,
+	delay time.Duration,
+) {
+	if autoCtx.Err() != nil {
+		return
+	}
+
+	p.autoMu.Lock()
+
+	if p.autoCancel == nil || p.autoExecutor == nil || exec != p.autoExecutor {
+		p.autoMu.Unlock()
+		return
+	}
+
+	prevCancel := p.autoTaskCancel
+	p.autoTaskCancel = nil
+	p.autoMu.Unlock()
+
+	if prevCancel != nil {
+		prevCancel()
+	}
+
+	cancelFunc, err := exec.ScheduleFunc(func(_ context.Context) {
+		if autoCtx.Err() != nil {
+			return
+		}
+
+		p.scheduleNextAutoRefresh(autoCtx, exec, refreshBefore, fallbackInterval, true)
 	}, delay)
 	if err != nil {
 		p.StopAutoRefresh()

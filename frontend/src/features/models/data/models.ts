@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { graphqlRequest } from '@/gql/graphql';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { useErrorHandler } from '@/hooks/use-error-handler';
 import { Model, ModelConnection, CreateModelInput, UpdateModelInput, modelConnectionSchema, modelSchema } from './schema';
 
 const MODELS_QUERY = `
@@ -56,6 +57,30 @@ const MODELS_QUERY = `
               type
               priority
               disabled
+              when {
+                enabled
+                condition {
+                  type
+                  logic
+                  field
+                  operator
+                  value
+                  conditions {
+                    type
+                    logic
+                    field
+                    operator
+                    value
+                    conditions {
+                      type
+                      logic
+                      field
+                      operator
+                      value
+                    }
+                  }
+                }
+              }
               channelModel {
                 channelId
                 modelId
@@ -150,6 +175,30 @@ const CREATE_MODEL_MUTATION = `
           type
           priority
           disabled
+          when {
+            enabled
+            condition {
+              type
+              logic
+              field
+              operator
+              value
+              conditions {
+                type
+                logic
+                field
+                operator
+                value
+                conditions {
+                  type
+                  logic
+                  field
+                  operator
+                  value
+                }
+              }
+            }
+          }
           channelModel {
             channelId
             modelId
@@ -226,6 +275,30 @@ const BULK_CREATE_MODELS_MUTATION = `
           type
           priority
           disabled
+          when {
+            enabled
+            condition {
+              type
+              logic
+              field
+              operator
+              value
+              conditions {
+                type
+                logic
+                field
+                operator
+                value
+                conditions {
+                  type
+                  logic
+                  field
+                  operator
+                  value
+                }
+              }
+            }
+          }
           channelModel {
             channelId
             modelId
@@ -302,6 +375,30 @@ const UPDATE_MODEL_MUTATION = `
           type
           priority
           disabled
+          when {
+            enabled
+            condition {
+              type
+              logic
+              field
+              operator
+              value
+              conditions {
+                type
+                logic
+                field
+                operator
+                value
+                conditions {
+                  type
+                  logic
+                  field
+                  operator
+                  value
+                }
+              }
+            }
+          }
           channelModel {
             channelId
             modelId
@@ -409,6 +506,7 @@ export function useQueryAllModels(args: QueryAllModelsArgs) {
 export function useCreateModel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (input: CreateModelInput) => {
@@ -419,8 +517,8 @@ export function useCreateModel() {
       queryClient.invalidateQueries({ queryKey: ['models'] });
       toast.success(t('models.messages.createSuccess'));
     },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
+    onError: (error) => {
+      handleError(error, { context: t('models.dialogs.create.title') });
     },
   });
 }
@@ -428,6 +526,7 @@ export function useCreateModel() {
 export function useBulkCreateModels() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (inputs: CreateModelInput[]) => {
@@ -438,8 +537,8 @@ export function useBulkCreateModels() {
       queryClient.invalidateQueries({ queryKey: ['models'] });
       toast.success(t('models.messages.bulkCreateSuccess', { count: variables.length }));
     },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
+    onError: (error) => {
+      handleError(error, { context: 'Bulk Create Models' });
     },
   });
 }
@@ -447,6 +546,7 @@ export function useBulkCreateModels() {
 export function useUpdateModel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async ({ id, input }: { id: string; input: UpdateModelInput }) => {
@@ -457,8 +557,8 @@ export function useUpdateModel() {
       queryClient.invalidateQueries({ queryKey: ['models'] });
       toast.success(t('models.messages.updateSuccess'));
     },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
+    onError: (error) => {
+      handleError(error, { context: t('models.dialogs.edit.title') });
     },
   });
 }
@@ -466,6 +566,7 @@ export function useUpdateModel() {
 export function useDeleteModel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (id: string) => {
@@ -475,8 +576,36 @@ export function useDeleteModel() {
       queryClient.invalidateQueries({ queryKey: ['models'] });
       toast.success(t('models.messages.deleteSuccess'));
     },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
+    onError: (error) => {
+      handleError(error, { context: 'Delete Model' });
+    },
+  });
+}
+
+const UPDATE_MODEL_STATUS_MUTATION = `
+  mutation UpdateModelStatus($id: ID!, $status: ModelStatus!) {
+    updateModelStatus(id: $id, status: $status)
+  }
+`;
+
+export function useUpdateModelStatus() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { handleError } = useErrorHandler();
+
+  return useMutation({
+    mutationFn: async ({ id, status }: { id: string; status: 'enabled' | 'archived' }) => {
+      const data = await graphqlRequest<{ updateModelStatus: boolean }>(UPDATE_MODEL_STATUS_MUTATION, { id, status });
+      return data.updateModelStatus;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['models'] });
+      const statusKey = variables.status === 'archived' ? 'archiveSuccess' : 'restoreSuccess';
+      toast.success(t(`models.messages.${statusKey}`));
+    },
+    onError: (error, variables) => {
+      const contextKey = variables.status === 'archived' ? 'archiveTitle' : 'restoreTitle';
+      handleError(error, { context: t(`models.dialogs.status.${contextKey}`) });
     },
   });
 }
@@ -484,18 +613,21 @@ export function useDeleteModel() {
 export function useBulkDisableModels() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      const data = await graphqlRequest<{ bulkDisableModels: boolean }>(BULK_DISABLE_MODELS_MUTATION, { ids });
-      return data.bulkDisableModels;
+      try {
+        const data = await graphqlRequest<{ bulkDisableModels: boolean }>(BULK_DISABLE_MODELS_MUTATION, { ids });
+        return data.bulkDisableModels;
+      } catch (error) {
+        handleError(error, { context: 'Bulk Disable Models' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['models'] });
       toast.success(t('models.messages.bulkDisableSuccess', { count: variables.length }));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -503,18 +635,21 @@ export function useBulkDisableModels() {
 export function useBulkEnableModels() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { handleError } = useErrorHandler();
 
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      const data = await graphqlRequest<{ bulkEnableModels: boolean }>(BULK_ENABLE_MODELS_MUTATION, { ids });
-      return data.bulkEnableModels;
+      try {
+        const data = await graphqlRequest<{ bulkEnableModels: boolean }>(BULK_ENABLE_MODELS_MUTATION, { ids });
+        return data.bulkEnableModels;
+      } catch (error) {
+        handleError(error, { context: 'Bulk Enable Models' });
+        throw error;
+      }
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['models'] });
       toast.success(t('models.messages.bulkEnableSuccess', { count: variables.length }));
-    },
-    onError: () => {
-      toast.error(t('common.errors.internalServerError'));
     },
   });
 }
@@ -533,6 +668,10 @@ export interface ModelAssociationInput {
   type: 'channel_model' | 'channel_regex' | 'regex' | 'model' | 'channel_tags_model' | 'channel_tags_regex';
   priority?: number;
   disabled?: boolean;
+  when?: {
+    enabled?: boolean;
+    condition?: FilterConditionInput;
+  };
   channelModel?: {
     channelId: number;
     modelId: string;
@@ -563,6 +702,15 @@ export interface ExcludeAssociationInput {
   channelNamePattern?: string;
   channelIds?: number[];
   channelTags?: string[];
+}
+
+export interface FilterConditionInput {
+  type: 'condition' | 'group';
+  logic?: string;
+  conditions?: FilterConditionInput[];
+  field?: string;
+  operator?: string;
+  value?: unknown;
 }
 
 export interface ChannelModelEntry {

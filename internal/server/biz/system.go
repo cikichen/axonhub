@@ -24,6 +24,7 @@ import (
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/pkg/xcache"
 	"github.com/looplj/axonhub/internal/pkg/xtime"
+	"github.com/looplj/axonhub/llm/httpclient"
 )
 
 const (
@@ -56,6 +57,10 @@ const (
 	// SystemKeyRetryPolicy is the key used to store the retry policy configuration.
 	// The value is JSON-encoded RetryPolicy struct.
 	SystemKeyRetryPolicy = "retry_policy"
+
+	// SystemKeyWebhookNotifierConfig is the key used to store the webhook notifier configuration.
+	// The value is JSON-encoded WebhookNotifierConfig struct.
+	SystemKeyWebhookNotifierConfig = "webhook_notifier_config"
 
 	// SystemKeyDefaultDataStorage is the key used to store the default data storage ID.
 	// If not set, the primary data storage will be used.
@@ -143,6 +148,7 @@ type AutoBackupSettings struct {
 // StoragePolicy represents the storage policy configuration.
 type StoragePolicy struct {
 	StoreChunks       bool            `json:"store_chunks"`
+	LivePreview       bool            `json:"live_preview"`
 	StoreRequestBody  bool            `json:"store_request_body"`
 	StoreResponseBody bool            `json:"store_response_body"`
 	CleanupOptions    []CleanupOption `json:"cleanup_options"`
@@ -184,6 +190,11 @@ type RetryPolicy struct {
 	// For compatibility with legacy setting, the name is AutoDisableChannel.
 	// If the channel has more than one key, the API key will be disabled instead of the channel.
 	AutoDisableChannel AutoDisableChannel `json:"auto_disable_channel"`
+
+	// EmptyResponseDetection controls whether to detect empty streaming responses.
+	// When enabled, the pipeline pre-reads stream events to check if the response
+	// contains meaningful content, and marks empty responses as failed attempts for retry handling.
+	EmptyResponseDetection bool `json:"empty_response_detection"`
 }
 
 type AutoDisableChannel struct {
@@ -202,6 +213,26 @@ type AutoDisableChannelStatus struct {
 	Times int `json:"times"`
 }
 
+type WebhookNotifierConfig struct {
+	Targets       []WebhookTarget       `json:"targets"`
+	Subscriptions []WebhookSubscription `json:"subscriptions"`
+}
+
+type WebhookTarget struct {
+	Name      string                  `json:"name"`
+	Enabled   bool                    `json:"enabled"`
+	URL       string                  `json:"url"`
+	Proxy     *httpclient.ProxyConfig `json:"proxy,omitempty"`
+	TimeoutMs int                     `json:"timeout_ms"`
+	Headers   []objects.HeaderEntry   `json:"headers"`
+	Body      string                  `json:"body"`
+}
+
+type WebhookSubscription struct {
+	Event       string   `json:"event"`
+	TargetNames []string `json:"target_names"`
+}
+
 // SystemModelSettings represents model-related configuration settings.
 type SystemModelSettings struct {
 	// FallbackToChannelsOnModelNotFound controls whether to fall back to legacy channel
@@ -216,6 +247,18 @@ type SystemModelSettings struct {
 	// When true, the models API will return all models supported by enabled channels.
 	// When false, only models that have explicit Model entity configuration will be returned.
 	QueryAllChannelModels bool `json:"query_all_channel_models"`
+
+	// DefaultModelAPIIncludeAll controls whether GET /v1/models returns extended model
+	// metadata by default when the include query parameter is omitted.
+	// When true, /v1/models behaves like /v1/models?include=all.
+	// When false, /v1/models returns only the basic compatibility fields by default.
+	DefaultModelAPIIncludeAll bool `json:"default_model_api_include_all"`
+
+	// AutoReasoningEffort controls whether model names with reasoning effort suffixes
+	// like "gpt-5.4-xhigh" are normalized to the base model and reasoning_effort.
+	// When true, the suffix is stripped from model and applied to request.reasoning_effort,
+	// overriding any reasoning_effort already set in the request.
+	AutoReasoningEffort bool `json:"auto_reasoning_effort"`
 }
 
 type SystemChannelSettings struct {
@@ -709,6 +752,21 @@ func (s *SystemService) StoragePolicy(ctx context.Context) (*StoragePolicy, erro
 	return &policy, nil
 }
 
+// StoragePolicyOrDefault retrieves the storage policy configuration or returns the default policy.
+func (s *SystemService) StoragePolicyOrDefault(ctx context.Context) *StoragePolicy {
+	policy, err := s.StoragePolicy(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return lo.ToPtr(defaultStoragePolicy)
+		}
+
+		log.Warn(ctx, "failed to get storage policy", log.Cause(err))
+		return lo.ToPtr(defaultStoragePolicy)
+	}
+
+	return policy
+}
+
 // SetStoragePolicy sets the storage policy configuration.
 func (s *SystemService) SetStoragePolicy(ctx context.Context, policy *StoragePolicy) error {
 	jsonBytes, err := json.Marshal(policy)
@@ -724,7 +782,10 @@ func (s *SystemService) RetryPolicy(ctx context.Context) (*RetryPolicy, error) {
 	value, err := s.getSystemValue(ctx, SystemKeyRetryPolicy)
 	if err != nil {
 		if ent.IsNotFound(err) {
-			return lo.ToPtr(defaultRetryPolicy), nil
+			policy := defaultRetryPolicy
+			normalizeRetryPolicy(&policy)
+
+			return &policy, nil
 		}
 
 		return nil, fmt.Errorf("failed to get retry policy: %w", err)
@@ -735,13 +796,7 @@ func (s *SystemService) RetryPolicy(ctx context.Context) (*RetryPolicy, error) {
 		return nil, fmt.Errorf("failed to unmarshal retry policy: %w", err)
 	}
 
-	if policy.LoadBalancerStrategy == "" {
-		policy.LoadBalancerStrategy = defaultRetryPolicy.LoadBalancerStrategy
-	}
-	// The weighted load balancer strategy is deprecated. Use the failover strategy instead.
-	if policy.LoadBalancerStrategy == "weighted" {
-		policy.LoadBalancerStrategy = LoadBalancerStrategyFailover
-	}
+	normalizeRetryPolicy(&policy)
 
 	return &policy, nil
 }
@@ -763,9 +818,7 @@ func (s *SystemService) RetryPolicyOrDefault(ctx context.Context) *RetryPolicy {
 
 // SetRetryPolicy sets the retry policy configuration.
 func (s *SystemService) SetRetryPolicy(ctx context.Context, policy *RetryPolicy) error {
-	if policy.LoadBalancerStrategy == "" {
-		policy.LoadBalancerStrategy = defaultRetryPolicy.LoadBalancerStrategy
-	}
+	normalizeRetryPolicy(policy)
 
 	jsonBytes, err := json.Marshal(policy)
 	if err != nil {
@@ -773,6 +826,87 @@ func (s *SystemService) SetRetryPolicy(ctx context.Context, policy *RetryPolicy)
 	}
 
 	return s.setSystemValue(ctx, SystemKeyRetryPolicy, string(jsonBytes))
+}
+
+func normalizeRetryPolicy(policy *RetryPolicy) {
+	if policy == nil {
+		return
+	}
+
+	if policy.LoadBalancerStrategy == "" {
+		policy.LoadBalancerStrategy = defaultRetryPolicy.LoadBalancerStrategy
+	}
+
+	// The weighted load balancer strategy is deprecated. Use the failover strategy instead.
+	if policy.LoadBalancerStrategy == "weighted" {
+		policy.LoadBalancerStrategy = LoadBalancerStrategyFailover
+	}
+
+	if policy.AutoDisableChannel.Statuses == nil {
+		policy.AutoDisableChannel.Statuses = []AutoDisableChannelStatus{}
+	}
+}
+
+func normalizeWebhookNotifierConfig(cfg *WebhookNotifierConfig) {
+	if cfg == nil {
+		return
+	}
+
+	if cfg.Targets == nil {
+		cfg.Targets = []WebhookTarget{}
+	}
+
+	if cfg.Subscriptions == nil {
+		cfg.Subscriptions = []WebhookSubscription{}
+	}
+}
+
+func (s *SystemService) WebhookNotifierConfig(ctx context.Context) (*WebhookNotifierConfig, error) {
+	value, err := s.getSystemValue(ctx, SystemKeyWebhookNotifierConfig)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			cfg := WebhookNotifierConfig{}
+			normalizeWebhookNotifierConfig(&cfg)
+
+			return &cfg, nil
+		}
+
+		return nil, fmt.Errorf("failed to get webhook notifier config: %w", err)
+	}
+
+	var cfg WebhookNotifierConfig
+	if err := json.Unmarshal([]byte(value), &cfg); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal webhook notifier config: %w", err)
+	}
+
+	normalizeWebhookNotifierConfig(&cfg)
+
+	return &cfg, nil
+}
+
+func (s *SystemService) WebhookNotifierConfigOrDefault(ctx context.Context) *WebhookNotifierConfig {
+	cfg, err := s.WebhookNotifierConfig(ctx)
+	if err != nil {
+		log.Error(ctx, "failed to get webhook notifier config", log.Cause(err))
+
+		defaultCfg := WebhookNotifierConfig{}
+		normalizeWebhookNotifierConfig(&defaultCfg)
+
+		return &defaultCfg
+	}
+
+	return cfg
+}
+
+func (s *SystemService) SetWebhookNotifierConfig(ctx context.Context, cfg *WebhookNotifierConfig) error {
+	normalizeWebhookNotifierConfig(cfg)
+
+	jsonBytes, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal webhook notifier config: %w", err)
+	}
+
+	return s.setSystemValue(ctx, SystemKeyWebhookNotifierConfig, string(jsonBytes))
 }
 
 // ModelSettings retrieves the model settings configuration.

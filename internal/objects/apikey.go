@@ -12,33 +12,41 @@ type APIKeyProfiles struct {
 }
 
 type APIKeyProfile struct {
-	Name                 string          `json:"name"`
-	ModelMappings        []ModelMapping  `json:"modelMappings"`
-	ChannelIDs           []int           `json:"channelIDs,omitempty"`
-	ChannelTags          []string        `json:"channelTags,omitempty"`
-	ChannelTagsMatchMode APIKeyMatchMode `json:"channelTagsMatchMode,omitempty"`
-	ModelIDs             []string        `json:"modelIDs,omitempty"`
-	Quota                *APIKeyQuota    `json:"quota,omitempty"`
-	LoadBalanceStrategy  *string         `json:"loadBalanceStrategy,omitempty"`
+	Name                string         `json:"name"`
+	ModelMappings       []ModelMapping `json:"modelMappings"`
+	Quota               *APIKeyQuota   `json:"quota,omitempty"`
+	LoadBalanceStrategy *string        `json:"loadBalanceStrategy,omitempty"`
+
+	ChannelIDs           []int                `json:"channelIDs,omitempty"`
+	ChannelTags          []string             `json:"channelTags,omitempty"`
+	ChannelTagsMatchMode ChannelTagsMatchMode `json:"channelTagsMatchMode,omitempty"`
+	ModelIDs             []string             `json:"modelIDs,omitempty"`
 }
 
-type APIKeyMatchMode string
+// ChannelTagsMatchMode controls how profile channel tags are matched.
+// If this enum is changed, update MatchChannelTags in this file.
+type ChannelTagsMatchMode string
 
 const (
-	APIKeyMatchModeAny APIKeyMatchMode = "any"
-	APIKeyMatchModeAll APIKeyMatchMode = "all"
+	ChannelTagsMatchModeAny  ChannelTagsMatchMode = "any"
+	ChannelTagsMatchModeAll  ChannelTagsMatchMode = "all"
+	ChannelTagsMatchModeNone ChannelTagsMatchMode = "none"
 )
 
-func (m APIKeyMatchMode) IsValid() bool {
-	return m == "" || m == APIKeyMatchModeAny || m == APIKeyMatchModeAll
+func (m ChannelTagsMatchMode) IsValid() bool {
+	return m == "" || m == ChannelTagsMatchModeAny || m == ChannelTagsMatchModeAll || m == ChannelTagsMatchModeNone
 }
 
-func (m APIKeyMatchMode) OrDefault() APIKeyMatchMode {
-	if m == APIKeyMatchModeAll {
-		return APIKeyMatchModeAll
+func (m ChannelTagsMatchMode) OrDefault() ChannelTagsMatchMode {
+	if m == ChannelTagsMatchModeAll {
+		return ChannelTagsMatchModeAll
 	}
 
-	return APIKeyMatchModeAny
+	if m == ChannelTagsMatchModeNone {
+		return ChannelTagsMatchModeNone
+	}
+
+	return ChannelTagsMatchModeAny
 }
 
 func (p *APIKeyProfile) MatchChannelTags(tags []string) bool {
@@ -46,21 +54,31 @@ func (p *APIKeyProfile) MatchChannelTags(tags []string) bool {
 		return true
 	}
 
-	//nolint:exhaustive // Checked.
-	switch p.ChannelTagsMatchMode.OrDefault() {
-	case APIKeyMatchModeAll:
-		for _, allowedTag := range p.ChannelTags {
-			matched := slices.Contains(tags, allowedTag)
+	return MatchChannelTags(p.ChannelTags, p.ChannelTagsMatchMode, tags)
+}
 
-			if !matched {
+func MatchChannelTags(allowedTags []string, matchMode ChannelTagsMatchMode, channelTags []string) bool {
+	//nolint:exhaustive // Checked.
+	switch matchMode.OrDefault() {
+	case ChannelTagsMatchModeAll:
+		for _, allowedTag := range allowedTags {
+			if !slices.Contains(channelTags, allowedTag) {
+				return false
+			}
+		}
+
+		return true
+	case ChannelTagsMatchModeNone:
+		for _, tag := range channelTags {
+			if slices.Contains(allowedTags, tag) {
 				return false
 			}
 		}
 
 		return true
 	default:
-		for _, tag := range tags {
-			if slices.Contains(p.ChannelTags, tag) {
+		for _, tag := range channelTags {
+			if slices.Contains(allowedTags, tag) {
 				return true
 			}
 		}

@@ -29,7 +29,7 @@ server:
 
 db:
   dialect: "sqlite3"
-  dsn: "file:axonhub.db?cache=shared&_fk=1"
+  dsn: "file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)"
 
 log:
   level: "info"
@@ -43,7 +43,7 @@ log:
 ```bash
 export AXONHUB_SERVER_PORT=8090
 export AXONHUB_DB_DIALECT="sqlite3"
-export AXONHUB_DB_DSN="file:axonhub.db?cache=shared&_fk=1"
+export AXONHUB_DB_DSN="file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)"
 export AXONHUB_LOG_LEVEL="info"
 ```
 
@@ -91,7 +91,7 @@ server:
 ```yaml
 db:
   dialect: "sqlite3"            # sqlite3, postgres, mysql, tidb
-  dsn: "file:axonhub.db?cache=shared&_fk=1"  # 连接字符串
+  dsn: "file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)"  # 连接字符串
   debug: false                  # 启用数据库调试日志
 ```
 
@@ -191,7 +191,7 @@ log:
 metrics:
   enabled: false                 # 启用指标收集
   exporter:
-    type: "oltphttp"            # prometheus, console
+    type: "otlphttp"            # stdout, otlpgrpc, otlphttp
     endpoint: "localhost:8080"  # 指标导出器端点
     insecure: true              # 启用不安全连接
 ```
@@ -264,7 +264,7 @@ server:
 
 db:
   dialect: "sqlite3"
-  dsn: "file:axonhub.db?cache=shared&_fk=1"
+  dsn: "file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)"
   debug: true
 
 log:
@@ -377,7 +377,7 @@ username.root:password@tcp(host:4000)/database?tls=true&parseTime=true&multiStat
    metrics:
      enabled: true
      exporter:
-       type: "prometheus"
+       type: "otlphttp"
    ```
 
 ### 故障排除

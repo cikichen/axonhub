@@ -29,6 +29,7 @@ type OpenAIHandlersParams struct {
 	VideoService                *biz.VideoService
 	ChannelService              *biz.ChannelService
 	ModelService                *biz.ModelService
+	DefaultSelector             *orchestrator.DefaultSelector
 	RequestService              *biz.RequestService
 	SystemService               *biz.SystemService
 	UsageLogService             *biz.UsageLogService
@@ -36,6 +37,7 @@ type OpenAIHandlersParams struct {
 	PromptProtectionRuleService *biz.PromptProtectionRuleService
 	QuotaService                *biz.QuotaService
 	HttpClient                  *httpclient.HttpClient
+	LiveStreamRegistry          *biz.LiveStreamRegistry
 	Client                      *ent.Client
 }
 
@@ -63,7 +65,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 		ChatCompletionHandlers: &ChatCompletionHandlers{
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
-				params.ModelService,
+				params.DefaultSelector,
 				params.RequestService,
 				params.HttpClient,
 				openai.NewInboundTransformer(),
@@ -72,12 +74,13 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.LiveStreamRegistry,
 			),
 		},
 		ResponseCompletionHandlers: &ChatCompletionHandlers{
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
-				params.ModelService,
+				params.DefaultSelector,
 				params.RequestService,
 				params.HttpClient,
 				responses.NewInboundTransformer(),
@@ -86,12 +89,13 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.LiveStreamRegistry,
 			),
 		},
 		CompactHandlers: &ChatCompletionHandlers{
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
-				params.ModelService,
+				params.DefaultSelector,
 				params.RequestService,
 				params.HttpClient,
 				responses.NewCompactInboundTransformer(),
@@ -100,12 +104,13 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.LiveStreamRegistry,
 			),
 		},
 		EmbeddingHandlers: &ChatCompletionHandlers{
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
-				params.ModelService,
+				params.DefaultSelector,
 				params.RequestService,
 				params.HttpClient,
 				openai.NewEmbeddingInboundTransformer(),
@@ -114,12 +119,13 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.LiveStreamRegistry,
 			),
 		},
 		ImageGenerationHandlers: &ChatCompletionHandlers{
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
-				params.ModelService,
+				params.DefaultSelector,
 				params.RequestService,
 				params.HttpClient,
 				openai.NewImageGenerationInboundTransformer(),
@@ -128,12 +134,13 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.LiveStreamRegistry,
 			),
 		},
 		ImageEditHandlers: &ChatCompletionHandlers{
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
-				params.ModelService,
+				params.DefaultSelector,
 				params.RequestService,
 				params.HttpClient,
 				openai.NewImageEditInboundTransformer(),
@@ -142,12 +149,13 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.LiveStreamRegistry,
 			),
 		},
 		ImageVariationHandlers: &ChatCompletionHandlers{
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
-				params.ModelService,
+				params.DefaultSelector,
 				params.RequestService,
 				params.HttpClient,
 				openai.NewImageVariationInboundTransformer(),
@@ -156,12 +164,13 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.LiveStreamRegistry,
 			),
 		},
 		VideoHandlers: &ChatCompletionHandlers{
 			ChatCompletionOrchestrator: orchestrator.NewChatCompletionOrchestrator(
 				params.ChannelService,
-				params.ModelService,
+				params.DefaultSelector,
 				params.RequestService,
 				params.HttpClient,
 				videoInbound,
@@ -170,6 +179,7 @@ func NewOpenAIHandlers(params OpenAIHandlersParams) *OpenAIHandlers {
 				params.PromptService,
 				params.QuotaService,
 				params.PromptProtectionRuleService,
+				params.LiveStreamRegistry,
 			),
 		},
 		VideoInboundTransformer: videoInbound,
@@ -334,14 +344,14 @@ const (
 	openAIErrorParamModel         = "model"
 )
 
-func parseOpenAIModelInclude(includeParam string) (map[string]bool, bool) {
+func parseOpenAIModelInclude(includeParam string, defaultIncludeAll bool) (map[string]bool, bool) {
 	var (
 		include      map[string]bool
 		needFullData bool
 	)
 
 	if includeParam == "" {
-		return nil, false
+		return nil, defaultIncludeAll
 	}
 
 	if includeParam == "all" {
@@ -488,7 +498,7 @@ func (handlers *OpenAIHandlers) RetrieveModel(c *gin.Context) {
 		return
 	}
 
-	include, needFullData := parseOpenAIModelInclude(c.Query("include"))
+	include, needFullData := parseOpenAIModelInclude(c.Query("include"), false)
 
 	models, err := handlers.ModelService.ListEnabledModels(ctx)
 	if err != nil {
@@ -536,35 +546,57 @@ func (handlers *OpenAIHandlers) ListModels(c *gin.Context) {
 
 	requestID, _ := contexts.GetRequestID(ctx)
 
-	include, needFullData := parseOpenAIModelInclude(c.Query("include"))
+	include, needFullData := parseOpenAIModelInclude(c.Query("include"), handlers.SystemService.ModelSettingsOrDefault(ctx).DefaultModelAPIIncludeAll)
 
 	var openaiModels []OpenAIModel
-	if needFullData {
-		// Query full model data from database with extended metadata
-		models, err := handlers.EntClient.Model.Query().
-			Where(model.StatusEQ(model.StatusEnabled)).
+
+	visibleModels, err := handlers.ModelService.ListEnabledModels(ctx)
+	if err != nil {
+		handlers.writeOpenAIInternalError(c, requestID, err)
+		return
+	}
+
+	if len(visibleModels) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"object": "list",
+			"data":   []OpenAIModel{},
+		})
+
+		return
+	}
+
+	if !needFullData {
+		openaiModels = lo.Map(visibleModels, func(m biz.ModelFacade, _ int) OpenAIModel {
+			return convertModelFacadeToOpenAIModel(m)
+		})
+	} else {
+		visibleIDs := lo.Map(visibleModels, func(m biz.ModelFacade, _ int) string {
+			return m.ID
+		})
+
+		dbModels, err := handlers.EntClient.Model.Query().
+			Where(
+				model.StatusEQ(model.StatusEnabled),
+				model.ModelIDIn(visibleIDs...),
+			).
 			All(ctx)
 		if err != nil {
 			handlers.writeOpenAIInternalError(c, requestID, err)
 			return
 		}
 
-		openaiModels = make([]OpenAIModel, 0, len(models))
-		for _, m := range models {
-			openaiModels = append(openaiModels, convertModelToOpenAIExtended(m, include))
-		}
-	} else {
-		// Basic mode: only return basic fields (backward compatible)
-		models, err := handlers.ModelService.ListEnabledModels(ctx)
-		if err != nil {
-			handlers.writeOpenAIInternalError(c, requestID, err)
-			return
+		dbModelMap := make(map[string]*ent.Model, len(dbModels))
+		for _, m := range dbModels {
+			dbModelMap[m.ModelID] = m
 		}
 
-		openaiModels = make([]OpenAIModel, 0, len(models))
-		for _, m := range models {
-			openaiModels = append(openaiModels, convertModelFacadeToOpenAIModel(m))
-		}
+		openaiModels = lo.Map(visibleModels, func(m biz.ModelFacade, _ int) OpenAIModel {
+			if dbModel, ok := dbModelMap[m.ID]; ok {
+				return convertModelToOpenAIExtended(dbModel, include)
+			}
+
+			return convertModelFacadeToOpenAIModel(m)
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{

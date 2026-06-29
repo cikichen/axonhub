@@ -383,10 +383,8 @@ func (r *queryResolver) TokenStatsByAPIKey(ctx context.Context, timeWindow *stri
 
 	// Sort by total tokens (descending) and limit to top 3
 	sort.Slice(results, func(i, j int) bool {
-		totalI := results[i].InputTokens + results[i].OutputTokens +
-			results[i].CachedTokens + results[i].ReasoningTokens
-		totalJ := results[j].InputTokens + results[j].OutputTokens +
-			results[j].CachedTokens + results[j].ReasoningTokens
+		totalI := results[i].InputTokens + results[i].OutputTokens + results[i].ReasoningTokens
+		totalJ := results[j].InputTokens + results[j].OutputTokens + results[j].ReasoningTokens
 
 		return totalI > totalJ
 	})
@@ -418,8 +416,7 @@ func (r *queryResolver) TokenStatsByAPIKey(ctx context.Context, timeWindow *stri
 
 	for _, result := range results {
 		if ak, exists := apiKeyMap[result.APIKeyID]; exists {
-			totalTokens := result.InputTokens + result.OutputTokens +
-				result.CachedTokens + result.ReasoningTokens
+			totalTokens := result.InputTokens + result.OutputTokens + result.ReasoningTokens
 
 			response = append(response, &TokenStatsByAPIKey{
 				APIKeyID:        objects.GUID{Type: "APIKey", ID: result.APIKeyID},
@@ -883,10 +880,21 @@ func (r *queryResolver) TokenStats(ctx context.Context) (*TokenStats, error) {
 // Note: Uses request_execution table for channel-level process tracking.
 // This provides success/failure rates per channel, suitable for monitoring channel health.
 // For result-only channel statistics, use RequestStatsByChannel instead.
-func (r *queryResolver) ChannelSuccessRates(ctx context.Context) ([]*ChannelSuccessRate, error) {
+func (r *queryResolver) ChannelSuccessRates(ctx context.Context, timeWindow *string, limit *int) ([]*ChannelSuccessRate, error) {
 	ctx = authz.WithScopeDecision(ctx, scopes.ScopeReadDashboard)
 
-	limitCount := 5
+	// Parse time window, default to "day"
+	if timeWindow == nil || *timeWindow == "" {
+		defaultWindow := "day"
+		timeWindow = &defaultWindow
+	}
+	since, applyFilter := r.parseTimeWindow(ctx, timeWindow)
+
+	// Handle limit parameter (0 means no limit)
+	limitCount := 0
+	if limit != nil && *limit > 0 {
+		limitCount = *limit
+	}
 
 	type channelExecutionStats struct {
 		ChannelID    int `json:"channel_id"`
@@ -904,8 +912,14 @@ func (r *queryResolver) ChannelSuccessRates(ctx context.Context) ([]*ChannelSucc
 				sql.As("SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)", "success_count"),
 				sql.As("SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)", "failed_count"),
 			).
-				Where(sql.NotNull(requestexecution.FieldChannelID)).
-				GroupBy(requestexecution.FieldChannelID)
+				Where(sql.NotNull(requestexecution.FieldChannelID))
+
+			// Apply time filter
+			if applyFilter {
+				s.Where(sql.GTE(s.C(requestexecution.FieldCreatedAt), since))
+			}
+
+			s.GroupBy(requestexecution.FieldChannelID)
 		}).
 		Scan(ctx, &results)
 	if err != nil {
@@ -928,13 +942,14 @@ func (r *queryResolver) ChannelSuccessRates(ctx context.Context) ([]*ChannelSucc
 		}
 
 		response = append(response, &ChannelSuccessRate{
-			ChannelID:    objects.GUID{Type: "Channel", ID: result.ChannelID},
-			ChannelName:  "",
-			ChannelType:  "",
-			SuccessCount: result.SuccessCount,
-			FailedCount:  result.FailedCount,
-			TotalCount:   totalCount,
-			SuccessRate:  successRate,
+			ChannelID:       objects.GUID{Type: "Channel", ID: result.ChannelID},
+			ChannelName:     "",
+			ChannelType:     "",
+			ChannelDisabled: false,
+			SuccessCount:    result.SuccessCount,
+			FailedCount:     result.FailedCount,
+			TotalCount:      totalCount,
+			SuccessRate:     successRate,
 		})
 	}
 
@@ -944,11 +959,11 @@ func (r *queryResolver) ChannelSuccessRates(ctx context.Context) ([]*ChannelSucc
 	})
 
 	// Apply limit
-	if len(response) > limitCount {
+	if limitCount > 0 && len(response) > limitCount {
 		response = response[:limitCount]
 	}
 
-	// Get channel details for the top channels
+	// Get channel details for the top channels (including soft-deleted channels)
 	channelIDs := lo.Map(response, func(item *ChannelSuccessRate, _ int) int {
 		return item.ChannelID.ID
 	})
@@ -971,6 +986,7 @@ func (r *queryResolver) ChannelSuccessRates(ctx context.Context) ([]*ChannelSucc
 		if ch, exists := channelMap[item.ChannelID.ID]; exists {
 			item.ChannelName = ch.Name
 			item.ChannelType = string(ch.Type)
+			item.ChannelDisabled = ch.Status != "enabled"
 		}
 	}
 
@@ -1484,7 +1500,10 @@ func (r *queryResolver) TokenStatsByChannel(ctx context.Context, timeWindow *str
 				sql.As(fmt.Sprintf("COALESCE(SUM(%s), 0)", s.C(usagelog.FieldCompletionReasoningTokens)), "reasoning_tokens"),
 			)
 
-			s.OrderBy(sql.Desc(fmt.Sprintf("COALESCE(SUM(%s), 0)", s.C(usagelog.FieldTotalTokens))))
+			s.OrderBy(sql.Desc(fmt.Sprintf("COALESCE(SUM(%s), 0) + COALESCE(SUM(%s), 0) + COALESCE(SUM(%s), 0)",
+				s.C(usagelog.FieldPromptTokens),
+				s.C(usagelog.FieldCompletionTokens),
+				s.C(usagelog.FieldCompletionReasoningTokens))))
 			s.Limit(10)
 		}).
 		Scan(ctx, &results)
@@ -1493,7 +1512,7 @@ func (r *queryResolver) TokenStatsByChannel(ctx context.Context, timeWindow *str
 	}
 
 	return lo.Map(results, func(item channelTokenStats, _ int) *TokenStatsByChannel {
-		totalTokens := item.InputTokens + item.OutputTokens + item.CachedTokens + item.ReasoningTokens
+		totalTokens := item.InputTokens + item.OutputTokens + item.ReasoningTokens
 
 		return &TokenStatsByChannel{
 			ChannelName:     item.ChannelName,
@@ -1539,7 +1558,10 @@ func (r *queryResolver) TokenStatsByModel(ctx context.Context, timeWindow *strin
 				sql.As(fmt.Sprintf("COALESCE(SUM(%s), 0)", s.C(usagelog.FieldCompletionReasoningTokens)), "reasoning_tokens"),
 			)
 
-			s.OrderBy(sql.Desc(fmt.Sprintf("COALESCE(SUM(%s), 0)", s.C(usagelog.FieldTotalTokens))))
+			s.OrderBy(sql.Desc(fmt.Sprintf("COALESCE(SUM(%s), 0) + COALESCE(SUM(%s), 0) + COALESCE(SUM(%s), 0)",
+				s.C(usagelog.FieldPromptTokens),
+				s.C(usagelog.FieldCompletionTokens),
+				s.C(usagelog.FieldCompletionReasoningTokens))))
 			s.Limit(10)
 		}).
 		Scan(ctx, &results)
@@ -1548,7 +1570,7 @@ func (r *queryResolver) TokenStatsByModel(ctx context.Context, timeWindow *strin
 	}
 
 	return lo.Map(results, func(item modelTokenStats, _ int) *TokenStatsByModel {
-		totalTokens := item.InputTokens + item.OutputTokens + item.CachedTokens + item.ReasoningTokens
+		totalTokens := item.InputTokens + item.OutputTokens + item.ReasoningTokens
 
 		return &TokenStatsByModel{
 			ModelID:         item.ModelID,

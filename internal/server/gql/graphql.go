@@ -2,16 +2,20 @@ package gql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"entgo.io/contrib/entgql"
+	"entgo.io/ent/privacy"
+	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/handler/extension"
 	"github.com/99designs/gqlgen/graphql/handler/lru"
 	"github.com/99designs/gqlgen/graphql/handler/transport"
 	"github.com/99designs/gqlgen/graphql/playground"
 	"github.com/vektah/gqlparser/v2/ast"
+	"github.com/vektah/gqlparser/v2/gqlerror"
 	"go.uber.org/fx"
 
 	"github.com/looplj/axonhub/internal/ent"
@@ -33,9 +37,11 @@ import (
 	"github.com/looplj/axonhub/internal/ent/user"
 	"github.com/looplj/axonhub/internal/ent/userproject"
 	"github.com/looplj/axonhub/internal/ent/userrole"
+	"github.com/looplj/axonhub/internal/pkg/xerrors"
 	"github.com/looplj/axonhub/internal/server/backup"
 	"github.com/looplj/axonhub/internal/server/biz"
 	"github.com/looplj/axonhub/internal/server/gc"
+	"github.com/looplj/axonhub/internal/server/orchestrator"
 	"github.com/looplj/axonhub/llm/httpclient"
 )
 
@@ -62,6 +68,8 @@ type Dependencies struct {
 	PromptService                  *biz.PromptService
 	PromptProtectionRuleService    *biz.PromptProtectionRuleService
 	ProviderQuotaService           *biz.ProviderQuotaService
+	DefaultSelector                *orchestrator.DefaultSelector
+	CandidateSelectorDiagnostics   *orchestrator.CandidateSelectorDiagnostics
 	HttpClient                     *httpclient.HttpClient
 	GCWorker                       *gc.Worker
 }
@@ -94,6 +102,8 @@ func NewGraphqlHandlers(deps Dependencies) *GraphqlHandler {
 			deps.PromptService,
 			deps.PromptProtectionRuleService,
 			deps.ProviderQuotaService,
+			deps.DefaultSelector,
+			deps.CandidateSelectorDiagnostics,
 			deps.HttpClient,
 			deps.GCWorker,
 		),
@@ -117,7 +127,35 @@ func NewGraphqlHandlers(deps Dependencies) *GraphqlHandler {
 		// when multiple test requests are sent in parallel from the frontend.
 		// TestChannel performs LLM API calls which can be long-running, and the
 		// database operations within don't require transactional consistency.
-		SkipTxFunc: entgql.SkipOperations("TestChannel"),
+		SkipTxFunc: entgql.SkipOperations("TestChannel", "TestChannelAPIKeys"),
+	})
+
+	// Set error presenter to handle CodedError and add extensions.code
+	gqlSrv.SetErrorPresenter(func(ctx context.Context, err error) *gqlerror.Error {
+		// Check if it's a CodedError
+		var codedErr *xerrors.CodedError
+		if errors.As(err, &codedErr) {
+			return &gqlerror.Error{
+				Message: codedErr.Message,
+				Extensions: map[string]any{
+					"code":     codedErr.Code,
+					"resource": codedErr.Extensions["resource"],
+					"field":    codedErr.Extensions["field"],
+					"value":    codedErr.Extensions["value"],
+				},
+			}
+		}
+		// Convert ent privacy deny errors to FORBIDDEN
+		if errors.Is(err, privacy.Deny) {
+			return &gqlerror.Error{
+				Message: "permission denied",
+				Extensions: map[string]any{
+					"code": xerrors.ErrCodeForbidden,
+				},
+			}
+		}
+		// Return default error presentation
+		return graphql.DefaultErrorPresenter(ctx, err)
 	})
 
 	return &GraphqlHandler{
@@ -158,8 +196,33 @@ func getNilableChannel(ctx context.Context, client *ent.Client, channelID int) (
 			return nil, nil
 		}
 
+		if errors.Is(err, privacy.Deny) {
+			return nil, nil
+		}
+
 		return nil, fmt.Errorf("failed to load channel: %w", err)
 	}
 
 	return ch, nil
+}
+
+func getNilableUser(ctx context.Context, client *ent.Client, userID int) (*ent.User, error) {
+	if userID == 0 {
+		return nil, nil
+	}
+
+	u, err := client.User.Query().Where(user.ID(userID)).First(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return nil, nil
+		}
+
+		if errors.Is(err, privacy.Deny) {
+			return nil, nil
+		}
+
+		return nil, fmt.Errorf("failed to load user: %w", err)
+	}
+
+	return u, nil
 }

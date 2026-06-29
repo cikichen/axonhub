@@ -187,6 +187,7 @@ func TestSystemService_StoragePolicy(t *testing.T) {
 	// First set a default storage policy to avoid JSON unmarshaling error
 	defaultPolicy := &StoragePolicy{
 		StoreChunks:       false,
+		LivePreview:       false,
 		StoreRequestBody:  true,
 		StoreResponseBody: true,
 		CleanupOptions: []CleanupOption{
@@ -210,6 +211,7 @@ func TestSystemService_StoragePolicy(t *testing.T) {
 	policy, err := service.StoragePolicy(ctx)
 	require.NoError(t, err)
 	require.False(t, policy.StoreChunks)
+	require.False(t, policy.LivePreview)
 	require.True(t, policy.StoreRequestBody)
 	require.True(t, policy.StoreResponseBody)
 	require.Len(t, policy.CleanupOptions, 2)
@@ -217,6 +219,7 @@ func TestSystemService_StoragePolicy(t *testing.T) {
 	// Test setting custom storage policy
 	customPolicy := &StoragePolicy{
 		StoreChunks:       true,
+		LivePreview:       true,
 		StoreRequestBody:  false,
 		StoreResponseBody: true,
 		CleanupOptions: []CleanupOption{
@@ -234,6 +237,7 @@ func TestSystemService_StoragePolicy(t *testing.T) {
 	retrievedPolicy, err := service.StoragePolicy(ctx)
 	require.NoError(t, err)
 	require.Equal(t, customPolicy.StoreChunks, retrievedPolicy.StoreChunks)
+	require.Equal(t, customPolicy.LivePreview, retrievedPolicy.LivePreview)
 	require.Equal(t, customPolicy.StoreRequestBody, retrievedPolicy.StoreRequestBody)
 	require.Equal(t, customPolicy.StoreResponseBody, retrievedPolicy.StoreResponseBody)
 	require.Len(t, retrievedPolicy.CleanupOptions, 1)
@@ -243,6 +247,46 @@ func TestSystemService_StoragePolicy(t *testing.T) {
 	storeChunks, err := service.StoreChunks(ctx)
 	require.NoError(t, err)
 	require.True(t, storeChunks)
+}
+
+func TestSystemService_WebhookNotifierConfig(t *testing.T) {
+	cacheConfig := xcache.Config{Mode: xcache.ModeMemory}
+
+	service, client := setupTestSystemService(t, cacheConfig)
+	defer client.Close()
+
+	ctx := context.Background()
+	ctx = ent.NewContext(ctx, client)
+	ctx = authz.WithTestBypass(ctx)
+
+	cfg, err := service.WebhookNotifierConfig(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	require.Empty(t, cfg.Targets)
+	require.Empty(t, cfg.Subscriptions)
+
+	customCfg := &WebhookNotifierConfig{
+		Targets: []WebhookTarget{
+			{
+				Name:      "default",
+				Enabled:   true,
+				URL:       "https://example.com/webhook",
+				TimeoutMs: 3000,
+				Headers:   []objects.HeaderEntry{{Key: "Content-Type", Value: "application/json"}},
+				Body:      `{"event":"{{.Event}}"}`,
+			},
+		},
+		Subscriptions: []WebhookSubscription{
+			{Event: EventChannelAutoDisabled, TargetNames: []string{"default"}},
+		},
+	}
+
+	err = service.SetWebhookNotifierConfig(ctx, customCfg)
+	require.NoError(t, err)
+
+	retrievedCfg, err := service.WebhookNotifierConfig(ctx)
+	require.NoError(t, err)
+	require.Equal(t, customCfg, retrievedCfg)
 }
 
 func TestSystemService_ChannelSetting_DefaultModelAutoSyncFrequency(t *testing.T) {

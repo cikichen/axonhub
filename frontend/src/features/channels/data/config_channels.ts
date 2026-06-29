@@ -1,5 +1,35 @@
 import type { ComponentType } from 'react';
-import { OpenAI, Anthropic, Google, DeepSeek, Doubao, Moonshot, Zhipu, OpenRouter, XAI, Volcengine, SiliconCloud, PPIO, ZAI, LongCat, Minimax, BurnCloud, Vercel, ModelScope, Bailian, Jina, DeepInfra, Github, Claude, Cerebras, XiaomiMiMo, Fireworks } from '@lobehub/icons';
+import {
+  OpenAI,
+  Anthropic,
+  Google,
+  DeepSeek,
+  Doubao,
+  Moonshot,
+  Zhipu,
+  OpenRouter,
+  XAI,
+  Volcengine,
+  SiliconCloud,
+  PPIO,
+  ZAI,
+  LongCat,
+  Minimax,
+  BurnCloud,
+  Vercel,
+  ModelScope,
+  Bailian,
+  Jina,
+  DeepInfra,
+  Github,
+  Claude,
+  Cerebras,
+  Qiniu,
+  XiaomiMiMo,
+  Fireworks,
+  Ollama,
+  AiHubMix,
+} from '@lobehub/icons';
 import { NanoGPTIcon } from '../components/nanogpt-icon';
 import { BURNCLOUD_DEFAULT_MODELS } from './burncloud-models';
 import { ApiFormat, ChannelType } from './schema';
@@ -415,6 +445,22 @@ export const CHANNEL_CONFIGS: Record<ChannelType, ChannelConfig> = {
     color: 'bg-blue-100 text-blue-800 border-blue-200',
     icon: Bailian,
   },
+  bailian_anthropic: {
+    channelType: 'bailian_anthropic',
+    baseURL: 'https://dashscope.aliyuncs.com/apps/anthropic',
+    defaultModels: ['qwen-max-plus', 'qwen-turbo', 'qwen-max'],
+    apiFormat: ANTHROPIC_MESSAGES,
+    color: 'bg-blue-100 text-blue-800 border-blue-200',
+    icon: Bailian,
+  },
+  moonshot_coding: {
+    channelType: 'moonshot_coding',
+    baseURL: 'https://api.kimi.com/coding',
+    defaultModels: ['kimi-k2-thinking', 'kimi-k2-0905-preview', 'kimi-k2-turbo-preview'],
+    apiFormat: ANTHROPIC_MESSAGES,
+    color: 'bg-black-100 text-black-800 border-black-200',
+    icon: Moonshot,
+  },
   anthropic_aws: {
     channelType: 'anthropic_aws',
     baseURL: 'https://bedrock-runtime.us-east-1.amazonaws.com',
@@ -498,8 +544,16 @@ export const CHANNEL_CONFIGS: Record<ChannelType, ChannelConfig> = {
   nanogpt: {
     channelType: 'nanogpt',
     baseURL: 'https://nano-gpt.com/api/v1',
-    defaultModels: ['zai-org/glm-4.7:thinking', 'zai-org/glm-4.7', 'zai-org/glm-4.6'],
+    defaultModels: ['hidream', 'flux-kontext', 'zai-org/glm-4.7:thinking', 'zai-org/glm-4.7', 'zai-org/glm-4.6'],
     apiFormat: OPENAI_CHAT_COMPLETIONS,
+    color: 'bg-gradient-to-br from-[#015a9e] to-[#11e9bb] text-slate-900 border-transparent',
+    icon: NanoGPTIcon,
+  },
+  nanogpt_responses: {
+    channelType: 'nanogpt_responses',
+    baseURL: 'https://nano-gpt.com/api/v1',
+    defaultModels: ['hidream', 'flux-kontext', 'zai-org/glm-4.7:thinking', 'zai-org/glm-4.7', 'zai-org/glm-4.6'],
+    apiFormat: OPENAI_RESPONSES,
     color: 'bg-gradient-to-br from-[#015a9e] to-[#11e9bb] text-slate-900 border-transparent',
     icon: NanoGPTIcon,
   },
@@ -514,6 +568,22 @@ export const CHANNEL_CONFIGS: Record<ChannelType, ChannelConfig> = {
     apiFormat: OPENAI_CHAT_COMPLETIONS,
     color: 'bg-orange-100 text-orange-800 border-orange-200',
     icon: Fireworks,
+  },
+  ollama: {
+    channelType: 'ollama',
+    baseURL: 'https://api.ollama.cloud',
+    defaultModels: [
+      'llama3.2',
+      'llama3.1',
+      'llama3',
+      'mistral',
+      'codellama',
+      'gemma2',
+      'qwen2.5',
+    ],
+    apiFormat: 'ollama/chat' as ApiFormat,
+    color: 'bg-slate-100 text-slate-800 border-slate-200',
+    icon: Ollama,
   },
 };
 
@@ -565,7 +635,8 @@ export type Provider =
   | 'codex'
   | 'antigravity'
   | 'nanogpt'
-  | 'fireworks';
+  | 'fireworks'
+  | 'ollama';
 
 /**
  * Map channel type to provider
@@ -607,6 +678,8 @@ export const CHANNEL_TYPE_TO_PROVIDER: Record<ChannelType, Provider> = {
   burncloud: 'burncloud',
   modelscope: 'modelscope',
   bailian: 'bailian',
+  bailian_anthropic: 'bailian',
+  moonshot_coding: 'moonshot',
   jina: 'jina',
   github: 'github',
   github_copilot: 'github_copilot',
@@ -615,7 +688,9 @@ export const CHANNEL_TYPE_TO_PROVIDER: Record<ChannelType, Provider> = {
   cerebras: 'cerebras',
   antigravity: 'antigravity',
   nanogpt: 'nanogpt',
+  nanogpt_responses: 'nanogpt',
   fireworks: 'fireworks',
+  ollama: 'ollama',
 };
 
 /**

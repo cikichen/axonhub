@@ -29,10 +29,6 @@ func NewInboundTransformer() *InboundTransformer {
 	return &InboundTransformer{}
 }
 
-func (t *InboundTransformer) APIFormat() llm.APIFormat {
-	return llm.APIFormatOpenAIResponse
-}
-
 // TransformRequest transforms OpenAI Responses API HTTP request to llm.Request.
 func (t *InboundTransformer) TransformRequest(ctx context.Context, httpReq *httpclient.Request) (*llm.Request, error) {
 	if httpReq == nil {
@@ -171,6 +167,7 @@ func convertToLLMRequest(req *Request) (*llm.Request, error) {
 		Temperature:         req.Temperature,
 		Stream:              req.Stream,
 		Metadata:            maps.Clone(req.Metadata),
+		RequestType:         llm.RequestTypeChat,
 		APIFormat:           llm.APIFormatOpenAIResponse,
 		MaxCompletionTokens: req.MaxOutputTokens,
 		User:                req.User,
@@ -181,6 +178,7 @@ func convertToLLMRequest(req *Request) (*llm.Request, error) {
 		ServiceTier:         req.ServiceTier,
 		ParallelToolCalls:   req.ParallelToolCalls,
 		PromptCacheKey:      req.PromptCacheKey,
+		PreviousResponseID:  req.PreviousResponseID,
 		TransformerMetadata: map[string]any{},
 		TransformOptions:    llm.TransformOptions{},
 	}
@@ -762,12 +760,13 @@ func convertToolsToLLM(tools []Tool) ([]llm.Tool, error) {
 // convertToResponsesAPIResponse converts llm.Response to Responses API Response.
 func convertToResponsesAPIResponse(chatResp *llm.Response) *Response {
 	resp := &Response{
-		Object:    "response",
-		ID:        chatResp.ID,
-		Model:     chatResp.Model,
-		CreatedAt: chatResp.Created,
-		Output:    make([]Item, 0),
-		Status:    lo.ToPtr("completed"),
+		Object:             "response",
+		ID:                 chatResp.ID,
+		Model:              chatResp.Model,
+		CreatedAt:          chatResp.Created,
+		Output:             make([]Item, 0),
+		Status:             lo.ToPtr("completed"),
+		PreviousResponseID: chatResp.PreviousResponseID,
 	}
 
 	// Convert usage

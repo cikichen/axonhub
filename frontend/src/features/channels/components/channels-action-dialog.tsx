@@ -8,7 +8,6 @@ import { X, RefreshCw, Search, ChevronLeft, ChevronRight, PanelLeft, Plus, Trash
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useSelectedProjectId } from '@/stores/projectStore';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -36,7 +35,7 @@ import {
   useSyncChannelModels,
 } from '../data/channels';
 import { claudecodeOAuthExchange, claudecodeOAuthStart } from '../data/claudecode';
-import { codexOAuthExchange, codexOAuthStart } from '../data/codex';
+import { codexDecodeAuthJSON, codexOAuthExchange, codexOAuthStart } from '../data/codex';
 import {
   getDefaultBaseURL,
   getDefaultModels,
@@ -203,7 +202,17 @@ function isOfficialCodexChannel(channel: { credentials?: { apiKey?: string } }):
   try {
     const apiKey = channel.credentials?.apiKey || '';
     const json = JSON.parse(apiKey);
-    return !!(json.access_token && json.refresh_token);
+    return !!((json.access_token && json.refresh_token) || (json.tokens?.access_token && json.tokens?.refresh_token));
+  } catch {
+    return false;
+  }
+}
+
+function isCodexAuthJSONChannel(channel: { credentials?: { apiKey?: string } }): boolean {
+  try {
+    const apiKey = channel.credentials?.apiKey || '';
+    const json = JSON.parse(apiKey);
+    return !!(json.tokens?.access_token && json.tokens?.refresh_token);
   } catch {
     return false;
   }
@@ -213,6 +222,17 @@ function isOfficialClaudeCodeChannel(channel: { credentials?: { apiKey?: string 
   const apiKey = channel.credentials?.apiKey || '';
   const defaultURL = getDefaultBaseURL('claudecode');
   return apiKey.includes('sk-ant-oat') || apiKey.includes('sk-ant-api03') || channel.baseURL === defaultURL;
+}
+
+function extractCodexAuthJSONText(apiKey: string | undefined): string | undefined {
+  if (!apiKey) return apiKey;
+
+  try {
+    const parsed = JSON.parse(apiKey);
+    return parsed?.tokens?.access_token ? apiKey : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpenChange, showModelsPanel = false }: Props) {
@@ -226,7 +246,6 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
   const syncChannelModels = useSyncChannelModels();
   const { data: allChannelNames = [], isSuccess: allChannelNamesLoaded } = useAllChannelNames({ enabled: open && isDuplicate });
   const { data: allTags = [], isLoading: isLoadingTags } = useAllChannelTags();
-  const selectedProjectId = useSelectedProjectId();
   const { data: proxyPresets = [] } = useProxyPresets();
   const saveProxyPreset = useSaveProxyPreset();
   const [supportedModels, setSupportedModels] = useState<string[]>(() => initialRow?.supportedModels || []);
@@ -256,7 +275,8 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
   const [confirmRemoveSelectedOpen, setConfirmRemoveSelectedOpen] = useState(false);
   const [confirmRemoveKey, setConfirmRemoveKey] = useState<string | null>(null);
   const [showGcpJsonData, setShowGcpJsonData] = useState(false);
-  const [authMode, setAuthMode] = useState<'official' | 'third-party'>('official');
+  const [authMode, setAuthMode] = useState<'official' | 'auth-json' | 'third-party'>('official');
+  const [codexAuthJSONText, setCodexAuthJSONText] = useState('');
   const [patternError, setPatternError] = useState<string | null>(null);
   const dialogContentRef = useRef<HTMLDivElement>(null);
 
@@ -280,6 +300,9 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
   const [proxyPassword, setProxyPassword] = useState(() => initialRow?.settings?.proxy?.password || '');
   const [passThroughUserAgent, setPassThroughUserAgent] = useState<boolean | null>(() => {
     return initialRow?.settings?.passThroughUserAgent ?? null;
+  });
+  const [passThroughBody, setPassThroughBody] = useState<boolean>(() => {
+    return initialRow?.settings?.passThroughBody ?? false;
   });
 
   // Memoized proxy config for OAuth exchange
@@ -310,7 +333,6 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
   const codexOAuth = useOAuthFlow({
     startFn: codexOAuthStart,
     exchangeFn: codexOAuthExchange,
-    projectId: selectedProjectId,
     proxyConfig,
     onSuccess: (credentials) => {
       form.setValue('credentials.apiKey', credentials);
@@ -320,7 +342,6 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
   const claudecodeOAuth = useOAuthFlow({
     startFn: claudecodeOAuthStart,
     exchangeFn: claudecodeOAuthExchange,
-    projectId: selectedProjectId,
     proxyConfig,
     onSuccess: (credentials) => {
       form.setValue('credentials.apiKey', credentials);
@@ -330,7 +351,6 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
   const antigravityOAuth = useOAuthFlow({
     startFn: antigravityOAuthStart,
     exchangeFn: antigravityOAuthExchange,
-    projectId: selectedProjectId,
     proxyConfig,
     onSuccess: (credentials) => {
       form.setValue('credentials.apiKey', credentials);
@@ -362,6 +382,12 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
     }
     return false;
   });
+  const [useKimiCoding, setUseKimiCoding] = useState(() => {
+    if (initialRow) {
+      return initialRow.type === 'moonshot_coding';
+    }
+    return false;
+  });
 
   useEffect(() => {
     if (!initialRow) return;
@@ -372,10 +398,12 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
     setSelectedApiFormat(apiFormat);
     setUseGeminiVertex(initialRow.type === 'gemini_vertex');
     setUseAnthropicAws(initialRow.type === 'anthropic_aws');
+    setUseKimiCoding(initialRow.type === 'moonshot_coding');
 
     // Detect authMode for codex and claudecode
     if (initialRow.type === 'codex') {
       setAuthMode(isOfficialCodexChannel(initialRow) ? 'official' : 'third-party');
+      setCodexAuthJSONText(extractCodexAuthJSONText(initialRow.credentials?.apiKey) || '');
     } else if (initialRow.type === 'claudecode') {
       setAuthMode(isOfficialClaudeCodeChannel(initialRow) ? 'official' : 'third-party');
     }
@@ -387,6 +415,7 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
       codexOAuth.reset();
       claudecodeOAuth.reset();
       antigravityOAuth.reset();
+      setCodexAuthJSONText('');
     }
   }, [open, codexOAuth, claudecodeOAuth, antigravityOAuth]);
 
@@ -479,10 +508,11 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
     // If anthropic/messages is selected, check which variant is selected
     if (selectedApiFormat === 'anthropic/messages') {
       if (useAnthropicAws) return 'anthropic_aws';
+      if (useKimiCoding) return 'moonshot_coding';
     }
 
     return getChannelTypeForApiFormat(selectedProvider, selectedApiFormat) || 'openai';
-  }, [selectedProvider, selectedApiFormat, useGeminiVertex, useAnthropicAws]);
+  }, [selectedProvider, selectedApiFormat, useGeminiVertex, useAnthropicAws, useKimiCoding]);
 
   const formSchema = isEdit ? updateChannelInputSchema : createChannelInputSchema;
 
@@ -643,6 +673,9 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
       if (provider !== 'anthropic') {
         setUseAnthropicAws(false);
       }
+      if (provider !== 'moonshot') {
+        setUseKimiCoding(false);
+      }
 
       if (provider === 'codex') {
         setSelectedApiFormat(OPENAI_RESPONSES);
@@ -684,7 +717,9 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
           ? 'gemini_vertex'
           : provider === 'anthropic' && newFormat === 'anthropic/messages' && useAnthropicAws
             ? 'anthropic_aws'
-            : getChannelTypeForApiFormat(provider, newFormat);
+            : provider === 'moonshot' && newFormat === 'anthropic/messages' && useKimiCoding
+              ? 'moonshot_coding'
+              : getChannelTypeForApiFormat(provider, newFormat);
       if (newChannelType) {
         form.setValue('type', newChannelType);
         if (!isEdit) {
@@ -699,7 +734,7 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
         }
       }
     },
-    [form, useGeminiVertex, useAnthropicAws, isDuplicate, isEdit, selectedApiFormat, isOAuthChannel]
+    [form, useGeminiVertex, useAnthropicAws, useKimiCoding, isDuplicate, isEdit, selectedApiFormat, isOAuthChannel]
   );
 
   const handleApiFormatChange = useCallback(
@@ -713,9 +748,10 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
       if (format !== 'gemini/contents') {
         setUseGeminiVertex(false);
       }
-      // Reset anthropic checkboxes if not anthropic/messages
+      // Reset anthropic/kimi checkboxes if not anthropic/messages
       if (format !== 'anthropic/messages') {
         setUseAnthropicAws(false);
+        setUseKimiCoding(false);
       }
 
       const channelTypeFromFormat = getChannelTypeForApiFormat(selectedProvider, format);
@@ -724,7 +760,9 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
           ? 'gemini_vertex'
           : format === 'anthropic/messages' && useAnthropicAws
             ? 'anthropic_aws'
-            : channelTypeFromFormat;
+            : format === 'anthropic/messages' && useKimiCoding
+              ? 'moonshot_coding'
+              : channelTypeFromFormat;
       if (newChannelType) {
         form.setValue('type', newChannelType);
 
@@ -739,7 +777,7 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
         }
       }
     },
-    [selectedProvider, form, useGeminiVertex, useAnthropicAws, isDuplicate, isEdit, isOAuthChannel]
+    [selectedProvider, form, useGeminiVertex, useAnthropicAws, useKimiCoding, isDuplicate, isEdit, isOAuthChannel]
   );
 
   const handleGeminiVertexChange = useCallback(
@@ -788,6 +826,29 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
     [selectedApiFormat, form, isDuplicate, isEdit, isOAuthChannel]
   );
 
+  const handleKimiCodingChange = useCallback(
+    (checked: boolean) => {
+      if (isOAuthChannel) return;
+      setUseKimiCoding(checked);
+
+      if (selectedApiFormat === 'anthropic/messages') {
+        const newChannelType = checked ? 'moonshot_coding' : 'moonshot_anthropic';
+        form.setValue('type', newChannelType);
+
+        if (!isEdit) {
+          const baseURLFieldState = form.getFieldState('baseURL', form.formState);
+          if (!baseURLFieldState.isDirty && !isDuplicate) {
+            const baseURL = getDefaultBaseURL(newChannelType);
+            if (baseURL) {
+              form.resetField('baseURL', { defaultValue: baseURL });
+            }
+          }
+        }
+      }
+    },
+    [selectedApiFormat, form, isDuplicate, isEdit, isOAuthChannel]
+  );
+
   useEffect(() => {
     if (isEdit || isDuplicate) return;
 
@@ -803,7 +864,7 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
 
     const providerToChannelType: Partial<Record<string, ChannelType>> = {
       claudecode: authMode === 'official' ? 'claudecode' : undefined,
-      codex: authMode === 'official' ? 'codex' : undefined,
+      codex: authMode === 'official' || authMode === 'auth-json' ? 'codex' : undefined,
       antigravity: 'antigravity',
     };
 
@@ -871,6 +932,20 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
     [t]
   );
 
+  const applyCodexAuthJSON = useCallback(async () => {
+    try {
+      const result = await codexDecodeAuthJSON({ auth_json: codexAuthJSONText });
+      form.setValue('credentials.apiKey', result.credentials, {
+        shouldDirty: true,
+        shouldTouch: true,
+        shouldValidate: true,
+      });
+      toast.success(t('channels.dialogs.codexAuthJson.messages.applied'));
+    } catch {
+      toast.error(t('channels.dialogs.codexAuthJson.messages.invalid'));
+    }
+  }, [codexAuthJSONText, form, t]);
+
   const onSubmit = async (values: z.infer<typeof formSchema>) => {
     // Check if there are selected fetched models that haven't been confirmed
     if (selectedFetchedModels.length > 0) {
@@ -894,9 +969,10 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
         ...valuesForSubmit,
         supportedModels,
         manualModels,
+        credentials: valuesForSubmit.credentials,
       };
 
-      if ((isCodexType || isClaudeCodeType) && authMode === 'official' && !isDuplicate) {
+      if (((isCodexType && (authMode === 'official' || authMode === 'auth-json')) || (isClaudeCodeType && authMode === 'official')) && !isDuplicate) {
         const currentType = selectedType || derivedChannelType;
         const baseURL = getDefaultBaseURL(currentType);
         if (baseURL) {
@@ -907,6 +983,7 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
       if (isEdit && currentRow) {
         const nextSettings = mergeChannelSettingsForUpdate(values.settings, {
           passThroughUserAgent,
+          passThroughBody,
         });
 
         const updateInput = {
@@ -948,6 +1025,7 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
         const nextSettings = mergeChannelSettingsForUpdate(values.settings, {
           proxy: proxyConfig,
           passThroughUserAgent,
+          passThroughBody,
         });
 
         await createChannel.mutateAsync({
@@ -1052,6 +1130,9 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
       const parsed = JSON.parse(oauthApiKey);
       if (parsed.access_token) {
         return parsed.access_token;
+      }
+      if (parsed.tokens?.access_token) {
+        return parsed.tokens.access_token;
       }
     } catch {
       // Not JSON, use as-is
@@ -1354,17 +1435,20 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
             setProxyUsername(initialRow?.settings?.proxy?.username || '');
             setProxyPassword(initialRow?.settings?.proxy?.password || '');
             setPassThroughUserAgent(initialRow?.settings?.passThroughUserAgent ?? null);
+            setPassThroughBody(initialRow?.settings?.passThroughBody ?? false);
             // Reset provider and API format state
             if (initialRow) {
               setSelectedProvider(getProviderFromChannelType(initialRow.type) || 'openai');
               setSelectedApiFormat(CHANNEL_CONFIGS[initialRow.type as ChannelType]?.apiFormat || OPENAI_CHAT_COMPLETIONS);
               setUseGeminiVertex(initialRow.type === 'gemini_vertex');
               setUseAnthropicAws(initialRow.type === 'anthropic_aws');
+              setUseKimiCoding(initialRow.type === 'moonshot_coding');
             } else {
               setSelectedProvider('openai');
               setSelectedApiFormat(OPENAI_CHAT_COMPLETIONS);
               setUseGeminiVertex(false);
               setUseAnthropicAws(false);
+              setUseKimiCoding(false);
             }
           }
           onOpenChange(state);
@@ -1480,6 +1564,20 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
                                     disabled={!!isOAuthChannel}
                                   />
                                   <span>{t('channels.dialogs.fields.apiFormat.anthropicAWS.label')}</span>
+                                </label>
+                              </div>
+                            )}
+                            {selectedApiFormat === 'anthropic/messages' && selectedProvider === 'moonshot' && (
+                              <div className='mt-3 space-y-2'>
+                                <label
+                                  className={`flex items-center gap-2 text-sm ${isOAuthChannel ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                                >
+                                  <Checkbox
+                                    checked={useKimiCoding}
+                                    onCheckedChange={(checked) => handleKimiCodingChange(checked === true)}
+                                    disabled={!!isOAuthChannel}
+                                  />
+                                  <span>{t('channels.dialogs.fields.apiFormat.kimiCoding.label')}</span>
                                 </label>
                               </div>
                             )}
@@ -1708,61 +1806,71 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
                         </FormItem>
                       )}
 
-                      <FormItem className='grid grid-cols-1 items-start gap-x-6 gap-y-2 md:grid-cols-8'>
-                        <FormLabel className='pt-2 font-medium md:col-span-2'>
-                          {t('channels.dialogs.userAgentPassThrough.label')}
-                        </FormLabel>
-                        <div className='space-y-1 md:col-span-6'>
-                          <Select
-                            value={passThroughUserAgent === null ? 'inherit' : passThroughUserAgent ? 'enabled' : 'disabled'}
-                            onValueChange={(value) => setPassThroughUserAgent(value === 'inherit' ? null : value === 'enabled')}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder={t('channels.dialogs.userAgentPassThrough.inherit')} />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value='inherit'>{t('channels.dialogs.userAgentPassThrough.inherit')}</SelectItem>
-                              <SelectItem value='enabled'>{t('channels.dialogs.userAgentPassThrough.enabled')}</SelectItem>
-                              <SelectItem value='disabled'>{t('channels.dialogs.userAgentPassThrough.disabled')}</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </FormItem>
-
                       {(isCodexType || isClaudeCodeType) && (
                         <div className='grid grid-cols-1 items-start gap-x-6 gap-y-2 md:grid-cols-8'>
                           <div className='col-span-2' />
                           <div className='space-y-4 md:col-span-6'>
-                            <Tabs
-                              value={authMode}
-                              onValueChange={(value) => {
-                                const mode = value as 'official' | 'third-party';
-                                setAuthMode(mode);
-                                if (mode === 'official') {
-                                  const currentType = selectedType || derivedChannelType;
-                                  const defaultURL = getDefaultBaseURL(currentType);
-                                  if (defaultURL) {
-                                    form.setValue('baseURL', defaultURL);
+                            <div className='space-y-3'>
+                              <Tabs
+                                value={authMode}
+                                onValueChange={(value) => {
+                                  const mode = value as 'official' | 'auth-json' | 'third-party';
+                                  setAuthMode(mode);
+                                  if (mode !== 'third-party') {
+                                    const currentType = selectedType || derivedChannelType;
+                                    const defaultURL = getDefaultBaseURL(currentType);
+                                    if (defaultURL) {
+                                      form.setValue('baseURL', defaultURL);
+                                    }
                                   }
-                                }
-                              }}
-                              className='w-full'
-                            >
-                              <TabsList className='grid w-full grid-cols-2'>
-                                <TabsTrigger value='official' disabled={isEdit}>
-                                  {t('channels.dialogs.authMode.official')}
-                                </TabsTrigger>
-                                <TabsTrigger value='third-party' disabled={isEdit}>
-                                  {t('channels.dialogs.authMode.thirdParty')}
-                                </TabsTrigger>
-                              </TabsList>
-                            </Tabs>
+                                }}
+                              >
+                                <TabsList className={`grid w-full ${isCodexType ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                                  <TabsTrigger value='official'>{t('channels.dialogs.authMode.official')}</TabsTrigger>
+                                  {isCodexType && (
+                                    <TabsTrigger value='auth-json'>{t('channels.dialogs.authMode.authJson')}</TabsTrigger>
+                                  )}
+                                  <TabsTrigger value='third-party'>{t('channels.dialogs.authMode.thirdParty')}</TabsTrigger>
+                                </TabsList>
+                              </Tabs>
 
-                            {authMode === 'official' && (
+                              {isCodexType && authMode === 'auth-json' && (
+                                <div className='rounded-md border p-3'>
+                                  <div className='space-y-2'>
+                                    <FormLabel className='text-sm font-medium'>
+                                      {t('channels.dialogs.codexAuthJson.label')}
+                                    </FormLabel>
+                                    <Textarea
+                                      value={codexAuthJSONText}
+                                      onChange={(e) => setCodexAuthJSONText(e.target.value)}
+                                      placeholder={t('channels.dialogs.codexAuthJson.placeholder')}
+                                      className='min-h-[160px] resize-y font-mono text-xs'
+                                    />
+                                    <Button type='button' variant='secondary' onClick={applyCodexAuthJSON}>
+                                      {t('channels.dialogs.codexAuthJson.applyButton')}
+                                    </Button>
+                                    <p className='text-muted-foreground text-xs'>
+                                      {t('channels.dialogs.codexAuthJson.description')}
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {isCodexType && (
                               <div className='space-y-2'>
-                                {isCodexType && renderOAuthSection(codexOAuth, t('channels.dialogs.fields.apiFormat.codex.description'))}
-                                {isClaudeCodeType &&
-                                  renderOAuthSection(claudecodeOAuth, t('channels.dialogs.fields.apiFormat.claudecode.description'))}
+                                {authMode === 'official' &&
+                                  renderOAuthSection(codexOAuth, t('channels.dialogs.fields.apiFormat.codex.description'))}
+                              </div>
+                            )}
+
+                            {isClaudeCodeType && (
+                              <div className='space-y-2'>
+                                {authMode === 'official' &&
+                                  renderOAuthSection(
+                                    claudecodeOAuth,
+                                    t('channels.dialogs.fields.apiFormat.claudecode.description')
+                                  )}
                               </div>
                             )}
                           </div>
@@ -1785,7 +1893,9 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
                                 aria-invalid={!!fieldState.error}
                                 data-testid='channel-base-url-input'
                                 disabled={
-                                  ((isCodexType || isClaudeCodeType) && authMode === 'official') || selectedProvider === 'antigravity'
+                                  ((isCodexType && (authMode === 'official' || authMode === 'auth-json')) ||
+                                    (isClaudeCodeType && authMode === 'official')) ||
+                                  selectedProvider === 'antigravity'
                                 }
                                 {...field}
                               />
@@ -1842,6 +1952,7 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
                                             className='min-h-[80px] resize-y pr-10 font-mono text-sm md:col-span-6'
                                             autoComplete='new-password'
                                             data-form-type='other'
+                                            spellCheck={false}
                                             aria-invalid={!!fieldState.error}
                                             data-testid='channel-api-key-input'
                                           />
@@ -1918,6 +2029,7 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
                                         className='min-h-[80px] resize-y font-mono text-sm md:col-span-6'
                                         autoComplete='new-password'
                                         data-form-type='other'
+                                        spellCheck={false}
                                         aria-invalid={!!fieldState.error}
                                         data-testid='channel-api-key-input'
                                       />
@@ -2205,6 +2317,44 @@ export function ChannelsActionDialog({ currentRow, duplicateFromRow, open, onOpe
                           </FormItem>
                         )}
                       />
+
+                      <FormItem className='grid grid-cols-1 items-start gap-x-6 gap-y-2 md:grid-cols-8'>
+                        <FormLabel className='pt-2 font-medium md:col-span-2 md:text-right'>
+                          {t('channels.dialogs.userAgentPassThrough.label')}
+                        </FormLabel>
+                        <div className='space-y-1 md:col-span-6'>
+                          <Select
+                            value={passThroughUserAgent === null ? 'inherit' : passThroughUserAgent ? 'enabled' : 'disabled'}
+                            onValueChange={(value) => setPassThroughUserAgent(value === 'inherit' ? null : value === 'enabled')}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder={t('channels.dialogs.userAgentPassThrough.inherit')} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value='inherit'>{t('channels.dialogs.userAgentPassThrough.inherit')}</SelectItem>
+                              <SelectItem value='enabled'>{t('channels.dialogs.userAgentPassThrough.enabled')}</SelectItem>
+                              <SelectItem value='disabled'>{t('channels.dialogs.userAgentPassThrough.disabled')}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </FormItem>
+
+                      <FormItem className='grid grid-cols-1 items-start gap-x-6 gap-y-2 md:grid-cols-8'>
+                        <FormLabel className='pt-2 font-medium md:col-span-2 md:text-right'>
+                          {t('channels.dialogs.bodyPassThrough.label')}
+                        </FormLabel>
+                        <div className='space-y-2 md:col-span-6'>
+                          <label className='flex cursor-pointer items-center gap-2 text-sm'>
+                            <Checkbox checked={passThroughBody} onCheckedChange={(checked) => setPassThroughBody(checked === true)} />
+                            <span>{t('channels.dialogs.bodyPassThrough.enabled')}</span>
+                          </label>
+                          {passThroughBody && (
+                            <p className='text-amber-600 dark:text-amber-400 text-xs'>
+                              {t('channels.dialogs.bodyPassThrough.warning')}
+                            </p>
+                          )}
+                        </div>
+                      </FormItem>
 
                       <FormField
                         control={form.control}

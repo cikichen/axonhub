@@ -2,6 +2,7 @@ package biz
 
 var defaultStoragePolicy = StoragePolicy{
 	StoreChunks:       false,
+	LivePreview:       false,
 	StoreRequestBody:  true,
 	StoreResponseBody: true,
 	CleanupOptions: []CleanupOption{
@@ -29,6 +30,7 @@ var defaultRetryPolicy = RetryPolicy{
 var defaultModelSettings = SystemModelSettings{
 	FallbackToChannelsOnModelNotFound: true,
 	QueryAllChannelModels:             true,
+	DefaultModelAPIIncludeAll:         false,
 }
 
 var defaultChannelSetting = SystemChannelSettings{

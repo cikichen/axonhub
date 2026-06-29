@@ -53,6 +53,8 @@ const (
 	FieldMetricsLatencyMs = "metrics_latency_ms"
 	// FieldMetricsFirstTokenLatencyMs holds the string denoting the metrics_first_token_latency_ms field in the database.
 	FieldMetricsFirstTokenLatencyMs = "metrics_first_token_latency_ms"
+	// FieldMetricsReasoningDurationMs holds the string denoting the metrics_reasoning_duration_ms field in the database.
+	FieldMetricsReasoningDurationMs = "metrics_reasoning_duration_ms"
 	// FieldRequestHeaders holds the string denoting the request_headers field in the database.
 	FieldRequestHeaders = "request_headers"
 	// EdgeRequest holds the string denoting the request edge name in mutations.
@@ -107,6 +109,7 @@ var Columns = []string{
 	FieldStream,
 	FieldMetricsLatencyMs,
 	FieldMetricsFirstTokenLatencyMs,
+	FieldMetricsReasoningDurationMs,
 	FieldRequestHeaders,
 }
 
@@ -129,6 +132,8 @@ var (
 	UpdateDefaultUpdatedAt func() time.Time
 	// DefaultProjectID holds the default value on creation for the "project_id" field.
 	DefaultProjectID int
+	// ExternalIDValidator is a validator for the "external_id" field. It is called by the builders before save.
+	ExternalIDValidator func(string) error
 	// DefaultFormat holds the default value on creation for the "format" field.
 	DefaultFormat string
 	// DefaultStream holds the default value on creation for the "stream" field.
@@ -242,6 +247,11 @@ func ByMetricsLatencyMs(opts ...sql.OrderTermOption) OrderOption {
 // ByMetricsFirstTokenLatencyMs orders the results by the metrics_first_token_latency_ms field.
 func ByMetricsFirstTokenLatencyMs(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldMetricsFirstTokenLatencyMs, opts...).ToFunc()
+}
+
+// ByMetricsReasoningDurationMs orders the results by the metrics_reasoning_duration_ms field.
+func ByMetricsReasoningDurationMs(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldMetricsReasoningDurationMs, opts...).ToFunc()
 }
 
 // ByRequestField orders the results by request field.

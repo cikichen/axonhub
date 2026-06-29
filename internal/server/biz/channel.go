@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zhenzou/executors"
@@ -71,11 +72,12 @@ type Channel struct {
 type ChannelServiceParams struct {
 	fx.In
 
-	CacheConfig   xcache.Config
-	Executor      executors.ScheduledExecutor
-	Ent           *ent.Client
-	SystemService *SystemService
-	HttpClient    *httpclient.HttpClient
+	CacheConfig     xcache.Config
+	Executor        executors.ScheduledExecutor
+	Ent             *ent.Client
+	SystemService   *SystemService
+	WebhookNotifier *WebhookNotifier
+	HttpClient      *httpclient.HttpClient
 }
 
 func NewChannelService(params ChannelServiceParams) *ChannelService {
@@ -85,6 +87,7 @@ func NewChannelService(params ChannelServiceParams) *ChannelService {
 		},
 		Executors:          params.Executor,
 		SystemService:      params.SystemService,
+		WebhookNotifier:    params.WebhookNotifier,
 		httpClient:         params.HttpClient,
 		channelPerfMetrics: make(map[int]*channelMetrics),
 		channelErrorCounts: make(map[int]map[int]int),
@@ -141,8 +144,9 @@ func (svc *ChannelService) Stop() {
 type ChannelService struct {
 	*AbstractService
 
-	Executors     executors.ScheduledExecutor
-	SystemService *SystemService
+	Executors       executors.ScheduledExecutor
+	SystemService   *SystemService
+	WebhookNotifier *WebhookNotifier
 
 	httpClient *httpclient.HttpClient
 
@@ -171,6 +175,10 @@ type ChannelService struct {
 	modelSyncMu sync.Mutex
 
 	lastModelSyncExecutionTime time.Time
+
+	// cacheVersion is incremented each time the enabled channels cache data is swapped.
+	// Used by external caches (e.g., association cache) to detect cache refreshes.
+	cacheVersion atomic.Int64
 
 	// perfCh is the channel for performance records for async processing.
 	perfCh chan *PerformanceRecord
@@ -243,6 +251,8 @@ func (svc *ChannelService) reloadEnabledChannels(ctx context.Context, current []
 }
 
 func (svc *ChannelService) onEnabledChannelsSwap(old, new []*Channel) {
+	svc.cacheVersion.Add(1)
+
 	for _, ch := range new {
 		if ch != nil && ch.startTokenProvider != nil {
 			ch.startTokenProvider()
@@ -254,6 +264,13 @@ func (svc *ChannelService) onEnabledChannelsSwap(old, new []*Channel) {
 			ch.stopTokenProvider()
 		}
 	}
+}
+
+// GetCacheVersion returns the current cache version counter.
+// This is incremented on every enabled channels cache swap and can be used
+// by external caches to detect when the underlying channel data has changed.
+func (svc *ChannelService) GetCacheVersion() int64 {
+	return svc.cacheVersion.Load()
 }
 
 // GetEnabledChannels returns all enabled channels.
@@ -456,7 +473,7 @@ func (svc *ChannelService) CreateChannel(ctx context.Context, input ent.CreateCh
 	}
 
 	if existing != nil {
-		return nil, fmt.Errorf("channel with name '%s' already exists", input.Name)
+		return nil, xerrors.DuplicateNameError("channel", input.Name)
 	}
 
 	channel, err := svc.createChannel(ctx, input)
@@ -486,7 +503,7 @@ func (svc *ChannelService) UpdateChannel(ctx context.Context, id int, input *ent
 		}
 
 		if existing != nil {
-			return nil, fmt.Errorf("channel with name '%s' already exists", *input.Name)
+			return nil, xerrors.DuplicateNameError("channel", *input.Name)
 		}
 	}
 

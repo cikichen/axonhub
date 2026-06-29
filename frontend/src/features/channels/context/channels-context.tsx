@@ -14,6 +14,7 @@ type ChannelsDialogType =
   | 'proxy'
   | 'status'
   | 'test'
+  | 'testHistory'
   | 'bulkImport'
   | 'archive'
   | 'bulkOrdering'
@@ -23,10 +24,13 @@ type ChannelsDialogType =
   | 'bulkTest'
   | 'bulkDelete'
   | 'bulkApplyTemplate'
+  | 'bulkClearTemplate'
   | 'errorResolved'
   | 'viewModels'
   | 'price'
   | 'transformOptions'
+  | 'rateLimit'
+  | 'testAPIKeys'
   | 'disabledAPIKeys';
 
 interface ChannelsContextType {

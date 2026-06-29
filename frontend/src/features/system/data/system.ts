@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { getTokenFromStorage } from '@/stores/authStore';
 import i18n from '@/lib/i18n';
 import { useErrorHandler } from '@/hooks/use-error-handler';
+import type { ProxyConfig } from '@/features/channels/data/schema';
 
 // GraphQL queries and mutations
 const SYSTEM_VERSION_QUERY = `
@@ -30,6 +31,26 @@ export const CHECK_FOR_UPDATE_QUERY = `
   }
 `;
 
+const GET_CACHE_DIAGNOSTICS_QUERY = `
+  query GetCacheDiagnostics($input: GetCacheDiagnosticsInput) {
+    getCacheDiagnostics(input: $input) {
+      fileName
+      content
+      targets
+    }
+  }
+`;
+
+const CLEAR_CACHE_MUTATION = `
+  mutation ClearCache($input: ClearCacheInput!) {
+    clearCache(input: $input) {
+      success
+      message
+      targets
+    }
+  }
+`;
+
 const BRAND_SETTINGS_QUERY = `
   query BrandSettings {
     brandSettings {
@@ -43,6 +64,7 @@ const STORAGE_POLICY_QUERY = `
   query StoragePolicy {
     storagePolicy {
       storeChunks
+      livePreview
       storeRequestBody
       storeResponseBody
       cleanupOptions {
@@ -74,6 +96,7 @@ const RETRY_POLICY_QUERY = `
       retryDelayMs
       loadBalancerStrategy
       enabled
+      emptyResponseDetection
       autoDisableChannel {
         enabled
         statuses {
@@ -88,6 +111,40 @@ const RETRY_POLICY_QUERY = `
 const UPDATE_RETRY_POLICY_MUTATION = `
   mutation UpdateRetryPolicy($input: UpdateRetryPolicyInput!) {
     updateRetryPolicy(input: $input)
+  }
+`;
+
+const WEBHOOK_NOTIFIER_CONFIG_QUERY = `
+  query WebhookNotifierConfig {
+    webhookNotifierConfig {
+      targets {
+        name
+        enabled
+        url
+        proxy {
+          type
+          url
+          username
+          password
+        }
+        timeoutMs
+        headers {
+          key
+          value
+        }
+        body
+      }
+      subscriptions {
+        event
+        targetNames
+      }
+    }
+  }
+`;
+
+const UPDATE_WEBHOOK_NOTIFIER_CONFIG_MUTATION = `
+  mutation UpdateWebhookNotifierConfig($input: WebhookNotifierConfigInput!) {
+    updateWebhookNotifierConfig(input: $input)
   }
 `;
 
@@ -176,6 +233,7 @@ export interface UpdateVideoStorageSettingsInput {
 
 export interface StoragePolicy {
   storeChunks: boolean;
+  livePreview: boolean;
   storeRequestBody: boolean;
   storeResponseBody: boolean;
   cleanupOptions: CleanupOption[];
@@ -194,6 +252,7 @@ export interface UpdateBrandSettingsInput {
 
 export interface UpdateStoragePolicyInput {
   storeChunks?: boolean;
+  livePreview?: boolean;
   storeRequestBody?: boolean;
   storeResponseBody?: boolean;
   cleanupOptions?: CleanupOptionInput[];
@@ -210,6 +269,31 @@ export interface AutoDisableChannelStatus {
   times: number;
 }
 
+export interface WebhookHeader {
+  key: string;
+  value: string;
+}
+
+export interface WebhookTarget {
+  name: string;
+  enabled: boolean;
+  url: string;
+  proxy?: ProxyConfig | null;
+  timeoutMs: number;
+  headers: WebhookHeader[];
+  body: string;
+}
+
+export interface WebhookSubscription {
+  event: string;
+  targetNames: string[];
+}
+
+export interface WebhookNotifierConfig {
+  targets: WebhookTarget[];
+  subscriptions: WebhookSubscription[];
+}
+
 export interface AutoDisableChannel {
   enabled: boolean;
   statuses: AutoDisableChannelStatus[];
@@ -222,6 +306,7 @@ export interface RetryPolicy {
   loadBalancerStrategy: string;
   enabled: boolean;
   autoDisableChannel: AutoDisableChannel;
+  emptyResponseDetection: boolean;
 }
 
 export interface AutoDisableChannelStatusInput {
@@ -241,6 +326,7 @@ export interface RetryPolicyInput {
   loadBalancerStrategy?: string;
   enabled?: boolean;
   autoDisableChannel?: AutoDisableChannelInput;
+  emptyResponseDetection?: boolean;
 }
 
 export interface UpdateDefaultDataStorageInput {
@@ -290,6 +376,20 @@ export interface VersionCheck {
   latestVersion: string;
   hasUpdate: boolean;
   releaseUrl: string;
+}
+
+export type DiagnosticsTarget = 'CHANNEL_CACHE';
+
+export interface GetCacheDiagnosticsPayload {
+  fileName: string;
+  content: string;
+  targets: DiagnosticsTarget[];
+}
+
+export interface ClearCachePayload {
+  success: boolean;
+  message: string;
+  targets: DiagnosticsTarget[];
 }
 
 // Hooks
@@ -405,6 +505,41 @@ export function useUpdateRetryPolicy() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['retryPolicy'] });
+      toast.success(i18n.t('common.success.systemUpdated'));
+    },
+    onError: () => {
+      toast.error(i18n.t('common.errors.systemUpdateFailed'));
+    },
+  });
+}
+
+export function useWebhookNotifierConfig() {
+  const { handleError } = useErrorHandler();
+
+  return useQuery({
+    queryKey: ['webhookNotifierConfig'],
+    queryFn: async () => {
+      try {
+        const data = await graphqlRequest<{ webhookNotifierConfig: WebhookNotifierConfig }>(WEBHOOK_NOTIFIER_CONFIG_QUERY);
+        return data.webhookNotifierConfig;
+      } catch (error) {
+        handleError(error, i18n.t('common.errors.internalServerError'));
+        throw error;
+      }
+    },
+  });
+}
+
+export function useUpdateWebhookNotifierConfig() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input: WebhookNotifierConfig) => {
+      const data = await graphqlRequest<{ updateWebhookNotifierConfig: boolean }>(UPDATE_WEBHOOK_NOTIFIER_CONFIG_MUTATION, { input });
+      return data.updateWebhookNotifierConfig;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['webhookNotifierConfig'] });
       toast.success(i18n.t('common.success.systemUpdated'));
     },
     onError: () => {
@@ -544,12 +679,67 @@ export function useCheckForUpdate() {
   });
 }
 
+export function useExportCacheDiagnostics() {
+  const { handleError } = useErrorHandler();
+
+  return useMutation({
+    mutationFn: async () => {
+      const data = await graphqlRequest<{ getCacheDiagnostics: GetCacheDiagnosticsPayload }>(
+        GET_CACHE_DIAGNOSTICS_QUERY,
+        { input: { targets: ['CHANNEL_CACHE'] } }
+      );
+      return data.getCacheDiagnostics;
+    },
+    onSuccess: (data) => {
+      const blob = new Blob([data.content], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = data.fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success(i18n.t('system.diagnostics.cache.exportSuccess'));
+    },
+    onError: (error) => {
+      handleError(error, i18n.t('system.diagnostics.cache.exportFailed'));
+    },
+  });
+}
+
+export function useClearCache() {
+  const { handleError } = useErrorHandler();
+
+  return useMutation({
+    mutationFn: async () => {
+      const data = await graphqlRequest<{ clearCache: ClearCachePayload }>(CLEAR_CACHE_MUTATION, {
+        input: { targets: ['CHANNEL_CACHE'] },
+      });
+      return data.clearCache;
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        toast.success(i18n.t('system.diagnostics.cache.clearSuccess'));
+        return;
+      }
+
+      toast.error(data.message || i18n.t('system.diagnostics.cache.clearFailed'));
+    },
+    onError: (error) => {
+      handleError(error, i18n.t('system.diagnostics.cache.clearFailed'));
+    },
+  });
+}
+
 // Model Settings
 const MODEL_SETTINGS_QUERY = `
   query ModelSettings {
     systemModelSettings {
       fallbackToChannelsOnModelNotFound
       queryAllChannelModels
+      defaultModelAPIIncludeAll
+      autoReasoningEffort
     }
   }
 `;
@@ -615,11 +805,15 @@ const UPDATE_VIDEO_STORAGE_SETTINGS_MUTATION = `
 export interface ModelSettings {
   fallbackToChannelsOnModelNotFound: boolean;
   queryAllChannelModels: boolean;
+  defaultModelAPIIncludeAll: boolean;
+  autoReasoningEffort: boolean;
 }
 
 export interface UpdateModelSettingsInput {
   fallbackToChannelsOnModelNotFound?: boolean;
   queryAllChannelModels?: boolean;
+  defaultModelAPIIncludeAll?: boolean;
+  autoReasoningEffort?: boolean;
 }
 
 export function useModelSettings() {

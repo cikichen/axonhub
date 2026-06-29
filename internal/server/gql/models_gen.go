@@ -121,18 +121,39 @@ type ChannelPerformanceStat struct {
 }
 
 type ChannelSuccessRate struct {
-	ChannelID    objects.GUID `json:"channelId"`
-	ChannelName  string       `json:"channelName"`
-	ChannelType  string       `json:"channelType"`
-	SuccessCount int          `json:"successCount"`
-	FailedCount  int          `json:"failedCount"`
-	TotalCount   int          `json:"totalCount"`
-	SuccessRate  float64      `json:"successRate"`
+	ChannelID       objects.GUID `json:"channelId"`
+	ChannelName     string       `json:"channelName"`
+	ChannelType     string       `json:"channelType"`
+	ChannelDisabled bool         `json:"channelDisabled"`
+	SuccessCount    int          `json:"successCount"`
+	FailedCount     int          `json:"failedCount"`
+	TotalCount      int          `json:"totalCount"`
+	SuccessRate     float64      `json:"successRate"`
 }
 
 type ChannelTypeCount struct {
 	Type  string `json:"type"`
 	Count int    `json:"count"`
+}
+
+type ClearCacheInput struct {
+	Targets []DiagnosticsTarget `json:"targets,omitempty"`
+}
+
+type ClearCachePayload struct {
+	Success bool                `json:"success"`
+	Message string              `json:"message"`
+	Targets []DiagnosticsTarget `json:"targets"`
+}
+
+type ClearChannelOverrideTemplatesInput struct {
+	ChannelIDs []*objects.GUID `json:"channelIDs"`
+}
+
+type ClearChannelOverrideTemplatesPayload struct {
+	Success  bool           `json:"success"`
+	Updated  int            `json:"updated"`
+	Channels []*ent.Channel `json:"channels"`
 }
 
 type CompleteAutoDisableChannelOnboardingInput struct {
@@ -214,6 +235,16 @@ type FastestModel struct {
 type FetchModelsPayload struct {
 	Models []*biz.ModelIdentify `json:"models"`
 	Error  *string              `json:"error,omitempty"`
+}
+
+type GetCacheDiagnosticsInput struct {
+	Targets []DiagnosticsTarget `json:"targets,omitempty"`
+}
+
+type GetCacheDiagnosticsPayload struct {
+	FileName string              `json:"fileName"`
+	Content  string              `json:"content"`
+	Targets  []DiagnosticsTarget `json:"targets"`
 }
 
 type HourlyRequestStats struct {
@@ -328,6 +359,22 @@ type SystemModelSettingOnboarding struct {
 
 type SystemStatus struct {
 	IsInitialized bool `json:"isInitialized"`
+}
+
+type TestAPIKeyResult struct {
+	KeyPrefix string  `json:"keyPrefix"`
+	Success   bool    `json:"success"`
+	Latency   float64 `json:"latency"`
+	Error     *string `json:"error,omitempty"`
+	Disabled  bool    `json:"disabled"`
+}
+
+type TestChannelAPIKeysPayload struct {
+	ChannelID    objects.GUID        `json:"channelID"`
+	Total        int                 `json:"total"`
+	SuccessCount int                 `json:"successCount"`
+	FailedCount  int                 `json:"failedCount"`
+	Results      []*TestAPIKeyResult `json:"results"`
 }
 
 type TestChannelInput struct {
@@ -456,19 +503,74 @@ type VersionCheck struct {
 	ReleaseURL     string `json:"releaseUrl"`
 }
 
+type DiagnosticsTarget string
+
+const (
+	DiagnosticsTargetChannelCache DiagnosticsTarget = "CHANNEL_CACHE"
+)
+
+var AllDiagnosticsTarget = []DiagnosticsTarget{
+	DiagnosticsTargetChannelCache,
+}
+
+func (e DiagnosticsTarget) IsValid() bool {
+	switch e {
+	case DiagnosticsTargetChannelCache:
+		return true
+	}
+	return false
+}
+
+func (e DiagnosticsTarget) String() string {
+	return string(e)
+}
+
+func (e *DiagnosticsTarget) UnmarshalGQL(v any) error {
+	str, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("enums must be strings")
+	}
+
+	*e = DiagnosticsTarget(str)
+	if !e.IsValid() {
+		return fmt.Errorf("%s is not a valid DiagnosticsTarget", str)
+	}
+	return nil
+}
+
+func (e DiagnosticsTarget) MarshalGQL(w io.Writer) {
+	fmt.Fprint(w, strconv.Quote(e.String()))
+}
+
+func (e *DiagnosticsTarget) UnmarshalJSON(b []byte) error {
+	s, err := strconv.Unquote(string(b))
+	if err != nil {
+		return err
+	}
+	return e.UnmarshalGQL(s)
+}
+
+func (e DiagnosticsTarget) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	e.MarshalGQL(&buf)
+	return buf.Bytes(), nil
+}
+
 type OverrideApplyMode string
 
 const (
-	OverrideApplyModeMerge OverrideApplyMode = "MERGE"
+	OverrideApplyModeMerge   OverrideApplyMode = "MERGE"
+	OverrideApplyModeReplace OverrideApplyMode = "REPLACE"
 )
 
 var AllOverrideApplyMode = []OverrideApplyMode{
 	OverrideApplyModeMerge,
+	OverrideApplyModeReplace,
 }
 
 func (e OverrideApplyMode) IsValid() bool {
 	switch e {
-	case OverrideApplyModeMerge:
+	case OverrideApplyModeMerge, OverrideApplyModeReplace:
 		return true
 	}
 	return false

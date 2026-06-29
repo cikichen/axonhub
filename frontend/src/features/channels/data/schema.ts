@@ -14,6 +14,7 @@ export const apiFormatSchema = z.enum([
   'aisdk/datastream',
   'jina/rerank',
   'jina/embeddings',
+  'ollama/chat',
 ]);
 
 export type ApiFormat = z.infer<typeof apiFormatSchema>;
@@ -57,6 +58,8 @@ export const channelTypeSchema = z.enum([
   'burncloud',
   'modelscope',
   'bailian',
+  'bailian_anthropic',
+  'moonshot_coding',
   'jina',
   'github',
   'github_copilot',
@@ -64,7 +67,9 @@ export const channelTypeSchema = z.enum([
   'antigravity',
   'cerebras',
   'nanogpt',
+  'nanogpt_responses',
   'fireworks',
+  'ollama',
 ]);
 export type ChannelType = z.infer<typeof channelTypeSchema>;
 
@@ -96,12 +101,14 @@ export type HeaderEntry = z.infer<typeof headerEntrySchema>;
 
 // Override Operation
 export const overrideOperationSchema = z.object({
-  op: z.enum(['set', 'delete', 'rename', 'copy']),
+  op: z.enum(['set', 'delete', 'rename', 'copy', 'array_append', 'array_prepend', 'array_insert']),
   path: z.string().optional(),
   from: z.string().optional(),
   to: z.string().optional(),
   value: z.any().optional(),
   condition: z.string().optional(),
+  index: z.number().int().nullish(),
+  splat: z.boolean().nullish(),
 })
 export type OverrideOperation = z.infer<typeof overrideOperationSchema>
 
@@ -142,6 +149,14 @@ export const channelProbeDataSchema = z.object({
 });
 export type ChannelProbeData = z.infer<typeof channelProbeDataSchema>;
 
+// Channel Rate Limit
+export const channelRateLimitSchema = z.object({
+  rpm: z.number().int().positive().optional().nullable(),
+  tpm: z.number().int().positive().optional().nullable(),
+  maxConcurrent: z.number().int().positive().optional().nullable(),
+});
+export type ChannelRateLimit = z.infer<typeof channelRateLimitSchema>;
+
 // Channel Settings
 export const channelSettingsSchema = z.object({
   extraModelPrefix: z.string().optional(),
@@ -154,6 +169,8 @@ export const channelSettingsSchema = z.object({
   proxy: proxyConfigSchema.optional().nullable(),
   transformOptions: transformOptionsSchema.optional(),
   passThroughUserAgent: z.boolean().optional().nullable(),
+  passThroughBody: z.boolean().optional(),
+  rateLimit: channelRateLimitSchema.optional().nullable(),
 });
 
 export type ChannelSettings = z.infer<typeof channelSettingsSchema>;
@@ -227,6 +244,24 @@ export const channelSchema = z.object({
   allModelEntries: z.array(channelModelEntrySchema).optional(),
 });
 export type Channel = z.infer<typeof channelSchema>;
+
+export const testAPIKeyResultSchema = z.object({
+  keyPrefix: z.string(),
+  success: z.boolean(),
+  latency: z.number(),
+  error: z.string().optional().nullable(),
+  disabled: z.boolean(),
+});
+export type TestAPIKeyResult = z.infer<typeof testAPIKeyResultSchema>;
+
+export const testChannelAPIKeysPayloadSchema = z.object({
+  channelID: z.string(),
+  total: z.number(),
+  successCount: z.number(),
+  failedCount: z.number(),
+  results: z.array(testAPIKeyResultSchema),
+});
+export type TestChannelAPIKeysPayload = z.infer<typeof testChannelAPIKeysPayloadSchema>;
 
 // Pricing Schemas
 export const pricingModeSchema = z.enum(['flat_fee', 'usage_per_unit', 'usage_tiered']);
@@ -593,6 +628,28 @@ export const channelOrderingConnectionSchema = z.object({
 });
 export type ChannelOrderingConnection = z.infer<typeof channelOrderingConnectionSchema>;
 
+export const channelSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: channelTypeSchema,
+  status: channelStatusSchema,
+  baseURL: z.string(),
+  orderingWeight: z.number(),
+  tags: z.array(z.string()).optional().default([]).nullable(),
+  allModelEntries: z.array(channelModelEntrySchema).optional().default([]),
+});
+export type ChannelSummary = z.infer<typeof channelSummarySchema>;
+
+export const channelSummaryConnectionSchema = z.object({
+  edges: z.array(
+    z.object({
+      node: channelSummarySchema,
+    })
+  ),
+  totalCount: z.number(),
+});
+export type ChannelSummaryConnection = z.infer<typeof channelSummaryConnectionSchema>;
+
 export const bulkUpdateChannelOrderingInputSchema = z.object({
   channels: z
     .array(
@@ -620,4 +677,6 @@ export type {
   UpdateChannelOverrideTemplateInput,
   ApplyChannelOverrideTemplateInput,
   ApplyChannelOverrideTemplatePayload,
+  ClearChannelOverrideTemplatesInput,
+  ClearChannelOverrideTemplatesPayload,
 } from './templates';

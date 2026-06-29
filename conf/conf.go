@@ -34,6 +34,7 @@ type Config struct {
 	ProviderQuota    providerQuotaConfig `conf:"provider_quota" yaml:"provider_quota" json:"provider_quota"`
 	DisableSSLVerify bool                `name:"disable_ssl_verify" yaml:"-" json:"-"`
 	AllowNoAuth      bool                `name:"allow_no_auth" yaml:"-" json:"-"`
+	APIKeyPrefix     string              `name:"api_key_prefix" yaml:"-" json:"-"`
 }
 
 type providerQuotaConfig struct {
@@ -90,6 +91,7 @@ func Load() (Config, error) {
 
 	config.DisableSSLVerify = config.APIServer.DisableSSLVerify
 	config.AllowNoAuth = config.APIServer.API.Auth.AllowNoAuth
+	config.APIKeyPrefix = config.APIServer.API.Auth.KeyPrefix
 
 	log.Debug(context.Background(), "Config loaded successfully", log.Any("config", config))
 
@@ -160,11 +162,17 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.cors.allow_credentials", false)
 	v.SetDefault("server.cors.max_age", "30m")
 	v.SetDefault("server.api.auth.allow_no_auth", false)
+	v.SetDefault("server.api.auth.key_prefix", "ah")
 
 	// Database defaults
 	v.SetDefault("db.dialect", "sqlite3")
 	v.SetDefault("db.dsn", "file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)")
 	v.SetDefault("db.debug", false)
+	v.SetDefault("db.max_open_conns", 20)
+	v.SetDefault("db.max_idle_conns", 10)
+	v.SetDefault("db.conn_max_lifetime", "30m")
+	v.SetDefault("db.conn_max_idle_time", "10m")
+	v.SetDefault("db.disable_sqlite_auto_wal", false)
 
 	// Log defaults
 	v.SetDefault("log.name", "axonhub")
@@ -191,7 +199,7 @@ func setDefaults(v *viper.Viper) {
 
 	// GC defaults
 	v.SetDefault("gc.cron", "0 2 * * *") // Daily at 2:00 AM
-	v.SetDefault("gc.vacuum_enabled", false)
+	v.SetDefault("gc.vacuum_enabled", true)
 	v.SetDefault("gc.vacuum_full", false)
 
 	// Provider quota defaults
